@@ -1,8 +1,10 @@
+<img src="docs/icon.png" width="104" alt="">
+
 # PhD Life Manager
 
 A local, single-user app for managing PhD work: calendar time-blocking synced
-with Apple Calendar, to-dos, research ideas, projects with memos, a phone-free
-focus timer, and a weekly recap.
+with Apple or Google Calendar, to-dos, research ideas, projects with memos, a
+phone-free focus timer, and a weekly recap.
 
 Everything runs on your own machine. No cloud service, no accounts, no
 framework, no build step. The backend is one Python file using only the

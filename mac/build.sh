@@ -23,6 +23,9 @@ if [ ! -f AppIcon.icns ] || [ makeicon.swift -nt AppIcon.icns ]; then
   swiftc -O -o makeicon makeicon.swift -framework Cocoa
   ./makeicon ./AppIcon.iconset
   iconutil -c icns AppIcon.iconset -o AppIcon.icns
+  # The iconset itself is a build product and stays out of the repository, so
+  # the README's copy is refreshed here rather than drifting from the source.
+  cp AppIcon.iconset/icon_256x256@2x.png "$REPO/docs/icon.png"
 fi
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
