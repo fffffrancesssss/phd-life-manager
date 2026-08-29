@@ -109,3 +109,8 @@ source, as above, avoids the problem entirely.
 This is a personal tool, built for one person's working habits, shared in case
 it is useful. It has no tests, no migrations, and no upgrade path — if you
 change the data formats, you are on your own. Fork it and make it yours.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Use it, change it, ship it; just keep the
+copyright notice.
