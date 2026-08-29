@@ -26,7 +26,7 @@ starts the server itself and shows the UI in a WKWebView.
 
 | Path | What |
 |---|---|
-| `server.py` | Whole backend: stdlib HTTP server + CalDAV. No framework. |
+| `server.py` | Whole backend: stdlib HTTP server, CalDAV, Google Calendar. No framework. |
 | `public/index.html` `app.js` `styles.css` | Whole frontend. Vanilla JS, no build step. |
 | `mac/main.swift` `build.sh` | Native app shell (WKWebView + server lifecycle). |
 | `data/` | All user data. Plain text wherever a human might read it. |
@@ -34,7 +34,10 @@ starts the server itself and shows the UI in a WKWebView.
 Data files: `todos.json`, `calendar.json`, `focus_sessions.json`,
 `caldav_config.json` (holds the iCloud app-specific password — never commit or
 print it), `caldav_cache.json` (last-known iCloud snapshot; disposable — delete
-it and the app just paints a beat later), `ideas.txt` (all ideas, one delimited
+it and the app just paints a beat later),
+`google_config.json` (OAuth client + refresh token — never commit or print it),
+`google_cache.json` (same idea as the iCloud one),
+`sync_config.json` (which service is selected), `ideas.txt` (all ideas, one delimited
 file),
 `projects/<slug>/project.json` + `memos/<id>.txt`,
 `journal/weekly/<monday>.txt` and `journal/daily/<date>.txt`.
@@ -80,10 +83,62 @@ them away.
    never reach `reconcile_todos_calendar()` — a stale snapshot standing in for
    a live read is exactly the "couldn't look" case in point 4.
 
+## Calendar sync is one service at a time
+
+`sync_config.json` holds `"none"`, `"icloud"` or `"google"`, and that single
+value decides everything: which events are fetched, which reconciler runs, and
+where a new block is written. It is not a UI preference — **the server reads it
+when creating a block** (`route_events` POST) rather than trusting a flag from
+the page, so a stale tab cannot write into an account the user has switched
+away from.
+
+Two services at once was considered and rejected. A block lives on exactly one
+calendar; if both accounts could claim to be that calendar you get duplicated
+events and a reconciler with no way to tell which side is authoritative.
+
+Switching does not migrate anything. Blocks already synced keep their
+`icloudUid`/`googleId` and keep updating wherever they were created — losing
+that link would orphan the event on the far side.
+
+`ensure_data()` migrates an install that predates the setting: if
+`caldav_config.json` has credentials, the provider defaults to `icloud`, not
+`none`. Getting this wrong silently switches off a working calendar on upgrade.
+
+## Google Calendar — how it differs from iCloud
+
+1. **OAuth only.** No app-specific passwords, so the user has to make their own
+   OAuth client in the Google Cloud console. `google_auth_url()` uses PKCE and
+   `prompt=consent` — without the latter Google only returns a refresh token
+   the *first* time an account authorises a client, so reconnecting later would
+   silently produce a connection that dies in an hour.
+
+2. **The REST API, not the client library.** `google-api-python-client` drags
+   in a large dependency tree for what is a handful of JSON requests. The whole
+   integration is `urllib`, which keeps the standard-library-only rule.
+
+3. **`google_api()` retries once after a 401**, refreshing the token first —
+   the same shape as the CalDAV stale-socket retry, for the same reason: the
+   token can expire between the check and the call.
+
+4. **The CalDAV rules are repeated here on purpose.** I/O is serialised behind
+   `_google_io_lock`; `google_fetch_events_with_status()` reports *which*
+   calendars failed and `reconcile_google_blocks()` aborts rather than reading
+   an unreadable calendar as an empty one; the disk cache is display-only.
+
+5. **Moving between calendars is a real endpoint** (`google_move_event`), so
+   unlike CalDAV it is not create-then-delete and cannot half-fail into a
+   duplicate.
+
+6. **`tests/test_google_stub.py` is the only way this gets tested.** There is
+   no way to reach the live API without an account and a browser round trip, so
+   the stub is where regressions get caught. Run it after touching any of this.
+
 ## Data model
 
 - **Local events** (`calendar.json`) are the app's own blocks. They carry
-  `icloudUid`, `icloudUrl`, `calendarName`, and optionally `todoId`.
+  `calendarName`, optionally `todoId`, and — depending on where they were
+  created — either `icloudUid`/`icloudUrl` or `googleId`/`googleCalendarId`.
+  Never both: the field that is set is what decides where an edit is pushed.
 - **External events** are everything else in iCloud. They have no local record
   and are **edited in place by URL** (`/api/caldav/event`), not adopted.
 - **Events on the Todos calendar created in Apple Calendar** get adopted into

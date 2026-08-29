@@ -162,9 +162,18 @@ const state = {
   ideaTagFilter: "",
   weekStart: startOfWeek(new Date()),
   currentProject: null,
+  // One calendar service at a time: "none", "icloud" or "google". A block
+  // lives on exactly one calendar, so letting two services both claim to be
+  // that calendar would duplicate events and leave the reconciler with no
+  // way to tell which side is right.
+  syncProvider: "none",
   icloudStatus: null,
+  googleStatus: null,
+  // Events from whichever account is connected, each tagged with its
+  // provider, because that is what decides how an edit reaches it.
   externalEvents: [],
   calendars: [],
+  googleCalendars: [],
   focus: {
     running: null, recommendation: null, selectedLink: null, externalEvents: [],
     summaryMode: "day", summaryAnchor: new Date(),
@@ -531,33 +540,42 @@ function applyExternalPins(list) {
 }
 
 function updateExternalEvent(ev, patch) {
-  const before = { start: ev.start, end: ev.end, title: ev.title, calendar: ev.calendar };
+  const before = { start: ev.start, end: ev.end, title: ev.title,
+                   calendar: ev.calendar, calendarId: ev.calendarId };
   Object.assign(ev, patch);
   pinExternal(ev.url, { ...patch });
   renderCalendarGrid();
 
+  // iCloud events are addressed by URL, Google's by id — same optimistic
+  // write either way, different envelope.
+  const google = ev.provider === "google";
   externalWrites++;
-  return API.put("/api/caldav/event", {
-    url: ev.url,
-    title: ev.title,
-    start: ev.start,
-    end: ev.end,
-    calendarName: before.calendar,
-    targetCalendarName: ev.calendar,
-  }).then(res => {
-    // A move to another calendar rewrites the event, so the URL it is edited
+  const sent = google
+    ? API.put("/api/google/event", {
+        id: ev.url, calendarId: before.calendarId,
+        targetCalendarId: ev.calendarId || before.calendarId,
+        title: ev.title, start: ev.start, end: ev.end,
+      })
+    : API.put("/api/caldav/event", {
+        url: ev.url, title: ev.title, start: ev.start, end: ev.end,
+        calendarName: before.calendar, targetCalendarName: ev.calendar,
+      });
+  return sent.then(res => {
+    // Moving between calendars rewrites the event, so what it is addressed
     // by changes with it.
-    if (res && res.url && res.url !== ev.url) {
+    const moved = google ? (res && res.id) : (res && res.url);
+    if (moved && moved !== ev.url) {
       externalPins.delete(ev.url);
-      ev.url = res.url;
-      if (res.uid) ev.uid = res.uid;
+      ev.url = moved;
+      if (google && res.calendarId) ev.calendarId = res.calendarId;
+      if (!google && res.uid) ev.uid = res.uid;
       pinExternal(ev.url, { ...patch });
     }
   }).catch(e => {
     externalPins.delete(ev.url);
     Object.assign(ev, before);
     renderCalendarGrid();
-    showToast("Couldn't save that iCloud event: " + e.message, "error");
+    showToast(`Couldn't save that ${google ? "Google" : "iCloud"} event: ` + e.message, "error");
   }).finally(() => { externalWrites--; });
 }
 
@@ -566,18 +584,49 @@ function deleteExternalEvent(ev) {
   if (at >= 0) state.externalEvents.splice(at, 1);
   renderCalendarGrid();
 
+  const google = ev.provider === "google";
   externalWrites++;
-  return API.del(`/api/caldav/event?url=${encodeURIComponent(ev.url)}&calendarName=${encodeURIComponent(ev.calendar)}`)
+  const sent = google
+    ? API.del(`/api/google/event?id=${encodeURIComponent(ev.url)}&calendarId=${encodeURIComponent(ev.calendarId)}`)
+    : API.del(`/api/caldav/event?url=${encodeURIComponent(ev.url)}&calendarName=${encodeURIComponent(ev.calendar)}`);
+  return sent
     .catch(e => {
       if (at >= 0) state.externalEvents.splice(Math.min(at, state.externalEvents.length), 0, ev);
       renderCalendarGrid();
-      showToast("Couldn't delete that iCloud event: " + e.message, "error");
+      showToast(`Couldn't delete that ${google ? "Google" : "iCloud"} event: ` + e.message, "error");
     })
     .finally(() => { externalWrites--; });
 }
 
-function canSyncToICloud() {
-  return !!(state.icloudStatus && state.icloudStatus.configured && state.icloudStatus.todosCalendarFound);
+// Whether a new block has anywhere to sync to. The server decides *which*
+// account from the selected provider; this only answers yes or no, so the
+// page and the server can never disagree about the destination.
+function syncEnabled() {
+  if (state.syncProvider === "icloud") {
+    return !!(state.icloudStatus && state.icloudStatus.configured && state.icloudStatus.todosCalendarFound);
+  }
+  if (state.syncProvider === "google") {
+    return !!(state.googleStatus && state.googleStatus.connected && state.googleStatus.blocksCalendarFound);
+  }
+  return false;
+}
+
+// The calendars a block may be put on, for whichever service is selected.
+function syncCalendars() {
+  if (state.syncProvider === "icloud") return state.calendars || [];
+  if (state.syncProvider === "google") return (state.googleCalendars || []).filter(c => c.writable);
+  return [];
+}
+
+// Falls back to "Todos" rather than an empty string: several things key off
+// this name — whether a block paints as ours, and whether the editor offers a
+// project — and with sync switched off they should still behave as they did
+// before any calendar was connected.
+function blocksCalendarName() {
+  if (state.syncProvider === "google") {
+    return (state.googleStatus && state.googleStatus.blocksCalendarName) || "Todos";
+  }
+  return (state.icloudStatus && state.icloudStatus.todosCalendarName) || "Todos";
 }
 
 function scheduleTodoOnDrop(todoId, day, hour) {
@@ -587,7 +636,7 @@ function scheduleTodoOnDrop(todoId, day, hour) {
   const end = new Date(start.getTime() + 60 * 60000);
   createEvent({
     title: todoDisplayText(todo), start: toLocalISO(start), end: toLocalISO(end), todoId: todo.id,
-    syncToICloud: canSyncToICloud(),
+    syncToCalendar: syncEnabled(),
   });
 }
 
@@ -692,9 +741,11 @@ function calendarHue(name) {
   return CALENDAR_HUES[h % CALENDAR_HUES.length];
 }
 
+// The app's own blocks stay solid and saturated; everything else in the
+// account is tinted back. Which calendar is "ours" depends on the service.
 function isTodosCalendar(name) {
-  const todos = (state.icloudStatus && state.icloudStatus.todosCalendarName) || "Todos";
-  return !!name && name.trim().toLowerCase() === todos.trim().toLowerCase();
+  const own = blocksCalendarName();
+  return !!name && !!own && name.trim().toLowerCase() === own.trim().toLowerCase();
 }
 
 // Todos stays solid and saturated; every other calendar is tinted back so
@@ -833,9 +884,11 @@ function openEventModal(opts) {
     defaultEnd = new Date(defaultStart.getTime() + 60 * 60000);
   }
 
-  const defaultCal = state.icloudStatus ? state.icloudStatus.todosCalendarName : "Todos";
+  const defaultCal = blocksCalendarName();
   const currentCal = ext ? ext.calendar : (ev && ev.calendarName) || defaultCal;
-  const cals = state.calendars || [];
+  // Only the selected service's calendars; a block cannot hop between
+  // accounts, so offering the other one's would be offering a dead end.
+  const cals = syncCalendars();
   // A to-do's block belongs with the to-dos; moving it elsewhere would break
   // the link the sidebar relies on.
   const lockedToTodos = !!(ev && ev.todoId);
@@ -953,7 +1006,7 @@ function openEventModal(opts) {
       createEvent({
         title, start: start + ":00", end: end + ":00",
         color: colorEl ? colorEl.value : COLORS[0].value,
-        syncToICloud: canSyncToICloud(), calendarName: targetCal,
+        syncToCalendar: syncEnabled(), calendarName: targetCal,
       });
     }
     closeModal();
@@ -974,37 +1027,64 @@ document.getElementById("cal-today").addEventListener("click", () => { state.wee
 
 // ---------------------------------------------------------------- iCloud
 
-async function loadICloudStatus() {
+async function loadSyncStatus({ cached = false } = {}) {
+  const q = cached ? "?cached=1" : "";
   try {
-    state.icloudStatus = await API.get("/api/caldav/status");
+    const res = await API.get(`/api/sync/provider${q}`);
+    state.syncProvider = res.provider || "none";
+    state.icloudStatus = res.icloud;
+    state.googleStatus = res.google;
   } catch (e) {
-    state.icloudStatus = { configured: false, connected: false, error: String(e) };
+    state.syncProvider = "none";
+    state.icloudStatus = null;
+    state.googleStatus = null;
   }
-  updateICloudButton();
+  updateSyncButton();
 }
 
-function updateICloudButton() {
-  const btn = document.getElementById("icloud-status-btn");
-  const s = state.icloudStatus;
+function updateSyncButton() {
+  const btn = document.getElementById("sync-status-btn");
   btn.classList.remove("connected", "error");
-  if (!s || !s.configured) {
-    btn.textContent = "iCloud: connect…";
-  } else if (s.connected && s.todosCalendarFound) {
-    btn.textContent = `iCloud: connected ✓`;
+
+  if (state.syncProvider === "none") { btn.textContent = "Calendar sync: off"; return; }
+
+  if (state.syncProvider === "icloud") {
+    const s = state.icloudStatus;
+    if (!s || !s.configured) { btn.textContent = "iCloud: connect…"; return; }
+    if (s.connected && s.todosCalendarFound) {
+      btn.textContent = "iCloud: connected ✓";
+      btn.classList.add("connected");
+    } else if (s.connected) {
+      btn.textContent = `iCloud: no "${s.todosCalendarName}" calendar`;
+      btn.classList.add("error");
+    } else {
+      btn.textContent = "iCloud: connection error";
+      btn.classList.add("error");
+    }
+    return;
+  }
+
+  const g = state.googleStatus;
+  if (!g || !g.configured) { btn.textContent = "Google: set up…"; return; }
+  if (!g.connected) { btn.textContent = "Google: connect…"; return; }
+  if (g.blocksCalendarFound) {
+    btn.textContent = "Google: connected ✓";
     btn.classList.add("connected");
-  } else if (s.connected) {
-    btn.textContent = `iCloud: connected, no "${s.todosCalendarName}" calendar`;
-    btn.classList.add("error");
   } else {
-    btn.textContent = "iCloud: connection error";
+    btn.textContent = "Google: pick a calendar";
     btn.classList.add("error");
   }
 }
 
-async function loadCalendars() {
-  if (!state.icloudStatus || !state.icloudStatus.connected) { state.calendars = []; return; }
-  try { state.calendars = await API.get("/api/caldav/calendars"); }
-  catch (e) { state.calendars = []; }
+async function loadCalendars({ cached = false } = {}) {
+  const q = cached ? "?cached=1" : "";
+  state.calendars = [];
+  state.googleCalendars = [];
+  if (state.syncProvider === "icloud" && state.icloudStatus && state.icloudStatus.connected) {
+    try { state.calendars = await API.get(`/api/caldav/calendars${q}`); } catch (e) { /* keep empty */ }
+  } else if (state.syncProvider === "google" && state.googleStatus && state.googleStatus.connected) {
+    try { state.googleCalendars = await API.get(`/api/google/calendars${q}`); } catch (e) { /* keep empty */ }
+  }
 }
 
 function calendarWeekQuery() {
@@ -1016,25 +1096,49 @@ function calendarWeekQuery() {
 // What iCloud looked like the last time anyone asked, served off disk. No
 // network, so a week paints in the same frame as the local data instead of a
 // few seconds later.
+// What the connected account looked like last time anyone asked, off disk.
+// No network, so a week paints in the same frame as the local data.
 async function loadCachedExternalEvents() {
-  if (!state.icloudStatus || !state.icloudStatus.configured) { state.externalEvents = []; return; }
+  const path = externalEventsPath({ cached: true });
+  if (!path) { state.externalEvents = []; return; }
   try {
-    state.externalEvents = applyExternalPins(await API.get(`/api/caldav/events?${calendarWeekQuery()}&cached=1`));
+    state.externalEvents = applyExternalPins(await API.get(path));
   } catch (e) {
     state.externalEvents = [];
   }
 }
 
-// The slow half. Talks to iCloud, so it is never on the path to a first paint.
+// A service is only worth asking once it has credentials. "Selected" alone
+// earns a 400 on every page load.
+function syncReady() {
+  if (state.syncProvider === "icloud") return !!(state.icloudStatus && state.icloudStatus.configured);
+  if (state.syncProvider === "google") return !!(state.googleStatus && state.googleStatus.connected);
+  return false;
+}
+
+// Where this week's events come from, for whichever single service is on.
+function externalEventsPath({ cached = false } = {}) {
+  if (!syncReady()) return null;
+  const qs = calendarWeekQuery() + (cached ? "&cached=1" : "");
+  return `/api/${state.syncProvider === "google" ? "google" : "caldav"}/events?${qs}`;
+}
+
+// The slow half. Talks to the calendar services, so it is never on the path
+// to a first paint.
 async function loadExternalEvents() {
-  if (!state.icloudStatus || !state.icloudStatus.configured) { state.externalEvents = []; renderCalendarGrid(); return; }
+  const path = externalEventsPath();
+  if (!path) { state.externalEvents = []; renderCalendarGrid(); return; }
   const qs = calendarWeekQuery();
 
-  // Pull any edits made in the Apple "Todos" calendar back in first, so
+  // Pull back edits made in the app's own calendar on the other side, so
   // events changed or created there show up here and stay editable.
-  if (state.icloudStatus.todosCalendarFound) {
+  const icloud = state.syncProvider === "icloud";
+  const ready = icloud
+    ? state.icloudStatus.todosCalendarFound
+    : state.googleStatus.blocksCalendarFound;
+  if (ready) {
     try {
-      const res = await API.post(`/api/caldav/sync?${qs}`, {});
+      const res = await API.post(`/api/${icloud ? "caldav" : "google"}/sync?${qs}`, {});
       // A write of our own that is still in the air is newer than anything
       // this reply can know about, so it is left to land on its own.
       if (res.changed && !calendarWritesPending()) {
@@ -1047,7 +1151,7 @@ async function loadExternalEvents() {
   }
 
   try {
-    state.externalEvents = applyExternalPins(await API.get(`/api/caldav/events?${qs}`));
+    state.externalEvents = applyExternalPins(await API.get(path));
   } catch (e) {
     state.externalEvents = [];
   }
@@ -1065,44 +1169,203 @@ function showCalendarWeek() {
   });
 }
 
-document.getElementById("icloud-status-btn").addEventListener("click", openICloudSettingsModal);
+document.getElementById("sync-status-btn").addEventListener("click", openSyncSettingsModal);
 
-async function openICloudSettingsModal() {
+// One dialog for the whole question of calendar sync, because the answer is
+// a single choice: off, iCloud, or Google. Picking one is what switches the
+// app over; each service's own fields appear underneath.
+async function openSyncSettingsModal() {
+  const provider = state.syncProvider || "none";
+  const choices = [
+    ["none", "Off", "Everything stays on this machine."],
+    ["icloud", "Apple iCloud", "Syncs with a calendar in your iCloud account."],
+    ["google", "Google", "Syncs with a calendar in your Google account."],
+  ];
+
+  openModal(`
+    <h3>Calendar sync</h3>
+    <div class="hint">One service at a time. A block lives on one calendar, so
+      switching services changes where new blocks are written — it never copies
+      what is already there.</div>
+    <div class="sync-choice" id="sync-choice">
+      ${choices.map(([value, label, note]) => `
+        <label class="sync-option${value === provider ? " selected" : ""}">
+          <input type="radio" name="sync-provider" value="${value}" ${value === provider ? "checked" : ""} />
+          <span class="sync-option-label">${escapeHtml(label)}</span>
+          <span class="sync-option-note">${escapeHtml(note)}</span>
+        </label>`).join("")}
+    </div>
+    <div id="sync-detail"></div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="secondary-btn" id="sync-close">Close</button>
+    </div>
+  `, { large: true });
+
+  document.getElementById("sync-close").onclick = closeModal;
+  document.querySelectorAll('input[name="sync-provider"]').forEach(radio => {
+    radio.addEventListener("change", async (e) => {
+      await API.post("/api/sync/provider", { provider: e.target.value });
+      await loadSyncStatus();
+      await loadCalendars();
+      loadExternalEvents();
+      closeModal();
+      openSyncSettingsModal();
+    });
+  });
+
+  const detail = document.getElementById("sync-detail");
+  if (provider === "icloud") await renderICloudSettings(detail);
+  else if (provider === "google") await renderGoogleSettings(detail);
+}
+
+async function renderICloudSettings(host) {
   const cfg = await API.get("/api/caldav/config");
   const s = state.icloudStatus;
   let statusLine = "Not connected yet.";
   if (s && s.configured) {
-    if (s.connected && s.todosCalendarFound) statusLine = `Connected. Writing routine blocks to "${escapeHtml(s.todosCalendarName)}".`;
+    if (s.connected && s.todosCalendarFound) statusLine = `Connected. Writing blocks to "${escapeHtml(s.todosCalendarName)}".`;
     else if (s.connected) statusLine = `Connected to iCloud, but no calendar named "${escapeHtml(s.todosCalendarName)}" was found. Create it in the Calendar app.`;
     else statusLine = `Configured, but connection failed: ${escapeHtml(s.error || "unknown error")}`;
   }
-  openModal(`
-    <h3>Connect iCloud Calendar</h3>
-    <div class="hint">${statusLine}</div>
-    <label>Apple ID (email)</label>
-    <input type="text" id="ic-username" value="${escapeAttr(cfg.icloudUsername)}" placeholder="you@icloud.com" />
-    <label>App-specific password</label>
-    <input type="password" id="ic-password" placeholder="${cfg.hasPassword ? "•••••••••••• (leave blank to keep)" : "xxxx-xxxx-xxxx-xxxx"}" />
-    <div class="hint">Generate one at <strong>appleid.apple.com</strong> → Sign-In and Security → App-Specific Passwords. Your regular Apple ID password won't work here. This is stored only in <code>data/caldav_config.json</code> on your machine.</div>
-    <label>Routine calendar name</label>
-    <input type="text" id="ic-calendar-name" value="${escapeAttr(cfg.todosCalendarName)}" placeholder="Todos" />
-    <div class="hint">Must match a calendar you've already created in the Calendar app / iCloud.</div>
-    <div class="modal-actions">
-      <div class="spacer"></div>
-      <button class="secondary-btn" id="ic-cancel">Close</button>
-      <button class="primary-btn" id="ic-save">Save & test</button>
-    </div>
-  `);
-  document.getElementById("ic-cancel").onclick = closeModal;
+  host.innerHTML = `
+    <div class="sync-panel">
+      <div class="hint">${statusLine}</div>
+      <label>Apple ID (email)</label>
+      <input type="text" id="ic-username" value="${escapeAttr(cfg.icloudUsername)}" placeholder="you@icloud.com" />
+      <label>App-specific password</label>
+      <input type="password" id="ic-password" placeholder="${cfg.hasPassword ? "•••••••••••• (leave blank to keep)" : "xxxx-xxxx-xxxx-xxxx"}" />
+      <div class="hint">Generate one at <strong>appleid.apple.com</strong> → Sign-In and Security → App-Specific Passwords. Your regular Apple ID password won't work here. It is stored only in <code>data/caldav_config.json</code> on your machine.</div>
+      <label>Calendar for this app's blocks</label>
+      <input type="text" id="ic-calendar-name" value="${escapeAttr(cfg.todosCalendarName)}" placeholder="Todos" />
+      <div class="hint">Must match a calendar you have already created in the Calendar app.</div>
+      <div class="sync-actions"><button class="primary-btn" id="ic-save">Save &amp; test</button></div>
+    </div>`;
   document.getElementById("ic-save").onclick = async () => {
-    const icloudUsername = document.getElementById("ic-username").value.trim();
-    const icloudAppPassword = document.getElementById("ic-password").value;
-    const todosCalendarName = document.getElementById("ic-calendar-name").value.trim() || "Todos";
-    await API.post("/api/caldav/config", { icloudUsername, icloudAppPassword, todosCalendarName });
-    await loadICloudStatus();
-    await loadExternalEvents();
+    await API.post("/api/caldav/config", {
+      icloudUsername: document.getElementById("ic-username").value.trim(),
+      icloudAppPassword: document.getElementById("ic-password").value,
+      todosCalendarName: document.getElementById("ic-calendar-name").value.trim() || "Todos",
+    });
+    await loadSyncStatus();
+    await loadCalendars();
+    loadExternalEvents();
     closeModal();
-    openICloudSettingsModal();
+    openSyncSettingsModal();
+  };
+}
+
+async function renderGoogleSettings(host) {
+  const cfg = await API.get("/api/google/config");
+  const g = state.googleStatus || {};
+
+  // Google has no app-specific passwords, so there is a one-time trip to the
+  // Google Cloud console before any of this works. The redirect URI is shown
+  // because it has to be registered there exactly.
+  if (!cfg.clientId || !cfg.hasSecret) {
+    host.innerHTML = `
+      <div class="sync-panel">
+        <div class="hint">Google needs an OAuth client of your own — there is no
+          app-specific password to paste. This is a one-time setup:</div>
+        <ol class="sync-steps">
+          <li>Open <strong>console.cloud.google.com</strong> and make a project.</li>
+          <li>Under <em>APIs &amp; Services</em>, enable the <strong>Google Calendar API</strong>.</li>
+          <li>Under <em>OAuth consent screen</em>, choose <em>External</em>, and add
+              your own address under <em>Test users</em>.</li>
+          <li>Under <em>Credentials</em>, create an <strong>OAuth client ID</strong> of
+              type <em>Web application</em>, and add this exact redirect URI:
+              <code class="sync-uri">${escapeHtml(cfg.redirectUri)}</code></li>
+          <li>Paste the client ID and secret below.</li>
+        </ol>
+        <label>Client ID</label>
+        <input type="text" id="g-client-id" value="${escapeAttr(cfg.clientId)}" placeholder="…apps.googleusercontent.com" />
+        <label>Client secret</label>
+        <input type="password" id="g-secret" placeholder="${cfg.hasSecret ? "•••••••••••• (leave blank to keep)" : "GOCSPX-…"}" />
+        <div class="hint">Stored only in <code>data/google_config.json</code> on your machine.</div>
+        <div class="sync-actions"><button class="primary-btn" id="g-save">Save</button></div>
+      </div>`;
+    document.getElementById("g-save").onclick = async () => {
+      await API.post("/api/google/config", {
+        clientId: document.getElementById("g-client-id").value.trim(),
+        clientSecret: document.getElementById("g-secret").value,
+      });
+      await loadSyncStatus();
+      closeModal();
+      openSyncSettingsModal();
+    };
+    return;
+  }
+
+  if (!g.connected) {
+    host.innerHTML = `
+      <div class="sync-panel">
+        <div class="hint">Client set up. Sign in to finish connecting — this opens
+          Google in your browser and comes back here.</div>
+        <div class="sync-actions">
+          <button class="secondary-btn" id="g-reset">Change client</button>
+          <button class="primary-btn" id="g-connect">Connect Google…</button>
+        </div>
+      </div>`;
+    document.getElementById("g-connect").onclick = async () => {
+      try {
+        const { url } = await API.post("/api/google/auth", {});
+        window.open(url, "_blank");
+        showToast("Finish signing in the tab that just opened, then reopen this dialog.");
+        closeModal();
+      } catch (e) {
+        showToast("Couldn't start Google sign-in: " + e.message, "error");
+      }
+    };
+    document.getElementById("g-reset").onclick = async () => {
+      await API.post("/api/google/config", { clientId: "" });
+      await loadSyncStatus();
+      closeModal();
+      openSyncSettingsModal();
+    };
+    return;
+  }
+
+  const cals = await API.get("/api/google/calendars").catch(() => []);
+  state.googleCalendars = cals;
+  const writable = cals.filter(c => c.writable);
+  host.innerHTML = `
+    <div class="sync-panel">
+      <div class="hint">${g.blocksCalendarFound
+        ? `Connected. Writing blocks to "${escapeHtml(g.blocksCalendarName)}".`
+        : (g.error ? escapeHtml(g.error) : "Connected. Choose which calendar this app should write its blocks to.")}</div>
+      <label>Calendar for this app's blocks</label>
+      <select id="g-calendar">
+        <option value="">Choose a calendar…</option>
+        ${writable.map(c => `<option value="${escapeAttr(c.id)}" ${c.id === cfg.blocksCalendarId ? "selected" : ""}>${escapeHtml(c.name)}${c.primary ? " (main)" : ""}</option>`).join("")}
+      </select>
+      <div class="hint">Only calendars you can write to are listed. Everything else
+        in the account is shown on the grid but never written to.</div>
+      <div class="sync-actions">
+        <button class="danger-btn" id="g-disconnect">Disconnect</button>
+        <div class="spacer"></div>
+        <button class="primary-btn" id="g-save-cal">Save</button>
+      </div>
+    </div>`;
+  document.getElementById("g-save-cal").onclick = async () => {
+    const sel = document.getElementById("g-calendar");
+    const picked = writable.find(c => c.id === sel.value);
+    await API.post("/api/google/config", {
+      blocksCalendarId: sel.value,
+      blocksCalendarName: picked ? picked.name : "",
+    });
+    await loadSyncStatus();
+    await loadCalendars();
+    loadExternalEvents();
+    closeModal();
+    openSyncSettingsModal();
+  };
+  document.getElementById("g-disconnect").onclick = async () => {
+    if (!confirm("Disconnect Google? Your blocks stay in both places; they just stop syncing.")) return;
+    await API.post("/api/google/disconnect", {});
+    await loadSyncStatus();
+    loadExternalEvents();
+    closeModal();
+    openSyncSettingsModal();
   };
 }
 
@@ -1681,12 +1944,16 @@ function formatDurationHuman(totalSeconds) {
 }
 
 async function loadFocusExternalEvents() {
-  if (!state.icloudStatus || !state.icloudStatus.configured) { state.focus.externalEvents = []; return; }
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const start = toLocalISO(addDays(today, -3));
   const end = toLocalISO(addDays(today, 8));
+  const qs = `start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  // Selected is not the same as usable: asking a service that has no
+  // credentials yet just earns a 400 on every page load.
+  const path = syncReady() ? `/api/${state.syncProvider === "google" ? "google" : "caldav"}/events?${qs}` : null;
+  if (!path) { state.focus.externalEvents = []; return; }
   try {
-    state.focus.externalEvents = await API.get(`/api/caldav/events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+    state.focus.externalEvents = await API.get(path);
   } catch (e) {
     state.focus.externalEvents = [];
   }
@@ -2374,7 +2641,7 @@ function renderRecapRatings() {
 // study, a dentist is life — so the same event can sit on either side.
 
 function todosCalendarName() {
-  return (state.icloudStatus && state.icloudStatus.todosCalendarName) || "Todos";
+  return blocksCalendarName() || "Todos";
 }
 
 function recapSources(kind) {
@@ -2610,34 +2877,32 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 
 // ---------------------------------------------------------------- init
 
-// Opening the app used to mean watching an empty week while iCloud was asked
-// what was in it. So the first paint is now local only — four data files plus
-// whatever iCloud last said, all of which the server answers off disk without
-// touching the network — and the real conversation with iCloud happens behind
-// the page that is already up.
+// Opening the app used to mean watching an empty week while the calendar
+// service was asked what was in it. So the first paint is local only — four
+// data files plus whatever the connected account last said, all of which the
+// server answers off disk without touching the network — and the real
+// conversation happens behind the page that is already up.
 async function loadAll() {
-  const [todos, events, ideas, projects, icloudStatus, calendars, cachedExternal] = await Promise.all([
+  const [todos, events, ideas, projects] = await Promise.all([
     API.get("/api/todos"),
     API.get("/api/events"),
     API.get("/api/ideas"),
     API.get("/api/projects"),
-    API.get("/api/caldav/status?cached=1").catch(() => ({ configured: false })),
-    API.get("/api/caldav/calendars?cached=1").catch(() => []),
-    API.get(`/api/caldav/events?${calendarWeekQuery()}&cached=1`).catch(() => []),
   ]);
   state.todos = todos; state.events = events; state.ideas = ideas; state.projects = projects;
-  state.icloudStatus = icloudStatus;
-  state.calendars = calendars;
-  state.externalEvents = icloudStatus.configured ? cachedExternal : [];
 
-  updateICloudButton();
+  // Which service is selected has to be known before its cached calendars and
+  // events can be asked for, but all three answers come off disk.
+  await loadSyncStatus({ cached: true });
+  await Promise.all([loadCalendars({ cached: true }), loadCachedExternalEvents()]);
+
   renderTodos();
   renderCalendarGrid();
   updateCalRangeLabel();
   renderIdeas();
   renderProjects();
 
-  refreshICloudInBackground();
+  refreshSyncInBackground();
   await Promise.all([
     loadFocusCurrent(),
     loadFocusSummary(),
@@ -2647,9 +2912,9 @@ async function loadAll() {
   ]);
 }
 
-// Everything that costs a round trip to Apple, in order, off the paint path.
-async function refreshICloudInBackground() {
-  await loadICloudStatus();
+// Everything that costs a round trip to Apple or Google, off the paint path.
+async function refreshSyncInBackground() {
+  await loadSyncStatus();
   await loadCalendars();
   await loadExternalEvents();
 }
