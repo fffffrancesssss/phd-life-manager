@@ -1,0 +1,5 @@
+# Only needed for the iCloud calendar sync. Everything else in the app is
+# Python standard library, and the app runs fine with these absent — the
+# calendar simply stays local.
+caldav>=1.3
+icalendar>=5.0

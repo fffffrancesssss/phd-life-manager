@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "phd-manager",
+      "runtimeExecutable": ".venv/bin/python3",
+      "runtimeArgs": ["server.py"],
+      "port": 8765
+    }
+  ]
+}

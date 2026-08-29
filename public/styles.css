@@ -1,0 +1,919 @@
+/* ===========================================================================
+   PhD Life Manager — visual system
+
+   Three rules drive everything below.
+
+   1. Colour is wayfinding, not decoration. Each section of the app owns one
+      hue; `body[data-domain]` swaps --accent/--accent-soft/--accent-strong so
+      every component recolours itself. You always know where you are, and no
+      component needs to know about sections.
+   2. One job per device. Separation comes from space and a single hairline —
+      not border AND shadow AND a background change all at once. Only modals
+      lift off the page.
+   3. Hierarchy lives in type and whitespace, so colour can stay sparse. Hues
+      appear in small doses: an active pill, a key number, a hover state.
+   =========================================================================== */
+
+:root {
+  /* Warm, low-chroma neutral ramp — paper, not grey. */
+  --paper:      #faf8f4;
+  --surface:    #ffffff;
+  --surface-2:  #f2eee7;
+  --line:       #e5dfd4;
+  --line-soft:  #efeae1;
+  --ink:        #23211c;
+  --ink-2:      #635e54;
+  /* Tertiary carries the uppercase micro-labels and meta text, so it is
+     pitched to clear ~4.5:1 on paper rather than going as pale as it looks
+     like it could. */
+  --ink-3:      #746e5f;
+
+  /* Section hues. Same lightness/chroma band so they read as one family. */
+  --c-calendar-soft: #eaeefb;  --c-calendar: #4f6ed4;  --c-calendar-strong: #3f58ad;
+  --c-ideas-soft:    #f9f0dd;  --c-ideas:    #c2892c;  --c-ideas-strong:    #8a5f13;
+  --c-projects-soft: #e3f2ea;  --c-projects: #2e8f70;  --c-projects-strong: #226e56;
+  --c-focus-soft:    #fbeddf;  --c-focus:    #d2762f;  --c-focus-strong:    #9b5219;
+  --c-journal-soft:  #f0eafa;  --c-journal:  #8763c8;  --c-journal-strong:  #6a4aa6;
+
+  /* Live accent — reassigned per section, consumed by every component. */
+  --accent:        var(--c-calendar);
+  --accent-soft:   var(--c-calendar-soft);
+  --accent-strong: var(--c-calendar-strong);
+
+  --danger:      #bf5340;
+  --danger-soft: #fbeeea;
+  --success:     #2e8f70;
+  --success-soft:#e3f2ea;
+
+  --r-sm: 8px;
+  --r:    12px;
+  --r-lg: 18px;
+
+  /* Only two elevations exist: hover, and floating. */
+  --lift:  0 4px 16px rgba(40, 32, 14, 0.07);
+  --float: 0 24px 60px rgba(35, 28, 12, 0.18);
+
+  --font-serif: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ease: 160ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+body[data-domain="ideas"]    { --accent: var(--c-ideas);    --accent-soft: var(--c-ideas-soft);    --accent-strong: var(--c-ideas-strong); }
+body[data-domain="projects"] { --accent: var(--c-projects); --accent-soft: var(--c-projects-soft); --accent-strong: var(--c-projects-strong); }
+body[data-domain="focus"]    { --accent: var(--c-focus);    --accent-soft: var(--c-focus-soft);    --accent-strong: var(--c-focus-strong); }
+body[data-domain="journal"]  { --accent: var(--c-journal);  --accent-soft: var(--c-journal-soft);  --accent-strong: var(--c-journal-strong); }
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+h1, h2, h3 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+/* ---------- top bar ---------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  padding: 0 24px;
+  height: 56px;
+  flex-shrink: 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-soft);
+  position: relative;
+  z-index: 5;
+}
+.brand {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.015em;
+}
+.tabs { display: flex; gap: 2px; }
+.tab-btn {
+  border: none;
+  background: transparent;
+  padding: 7px 14px;
+  border-radius: 100px;
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+.tab-btn:hover { color: var(--ink); background: var(--surface-2); }
+/* Each tab previews its own section colour, so the nav itself is the legend. */
+.tab-btn.active { font-weight: 600; }
+.tab-btn[data-tab="calendar"].active { color: var(--c-calendar-strong); background: var(--c-calendar-soft); }
+.tab-btn[data-tab="ideas"].active    { color: var(--c-ideas-strong);    background: var(--c-ideas-soft); }
+.tab-btn[data-tab="projects"].active { color: var(--c-projects-strong); background: var(--c-projects-soft); }
+.tab-btn[data-tab="focus"].active    { color: var(--c-focus-strong);    background: var(--c-focus-soft); }
+.tab-btn[data-tab="journal"].active  { color: var(--c-journal-strong);  background: var(--c-journal-soft); }
+
+/* ---------- shell ------------------------------------------------------ */
+
+.layout { display: flex; flex: 1; min-height: 0; }
+
+.sidebar {
+  width: 272px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line-soft);
+  background: var(--paper);
+  padding: 22px 16px;
+  overflow-y: auto;
+}
+.sidebar h2 {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--ink-3);
+  margin: 0 0 14px 2px;
+}
+
+.content { flex: 1; min-width: 0; overflow-y: auto; padding: 28px 32px 56px; }
+
+.tab-panel { display: none; }
+/* No entrance animation. The panel's content is already in the DOM, so
+   fading it in from opacity 0 blanked content that was about to be shown —
+   read as a flash on every tab click. Switching should be instant. */
+.tab-panel.active { display: block; }
+
+.hint { font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
+.hint code {
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--surface-2); color: var(--ink-2);
+  padding: 1px 5px; border-radius: 4px;
+}
+.empty-state { color: var(--ink-3); font-size: 13px; line-height: 1.6; padding: 22px 2px; }
+
+.panel-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.panel-header h2 { margin: 0; font-size: 26px; }
+.panel-header h3 { margin: 30px 0 0; font-size: 17px; }
+.panel-header + .cal-toolbar { margin-top: 12px; }
+
+/* ---------- to-do rail -------------------------------------------------
+   Rows, not cards. The rail should recede; the calendar is the subject.   */
+
+.todo-add-form { display: flex; gap: 6px; margin-bottom: 6px; }
+.todo-add-form input { flex: 1; }
+.todo-add-form button {
+  flex-shrink: 0; width: 34px; border: none; border-radius: var(--r-sm);
+  background: var(--accent); color: #fff; font-size: 17px; line-height: 1; cursor: pointer;
+  transition: background var(--ease), transform var(--ease);
+}
+.todo-add-form button:hover { background: var(--accent-strong); }
+.todo-add-form button:active { transform: scale(0.94); }
+
+.todo-list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.todo-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px;
+  border: none; background: transparent;
+  border-radius: var(--r-sm);
+  cursor: grab;
+  transition: background var(--ease), opacity var(--ease);
+}
+.todo-item:hover { background: var(--surface); }
+.todo-item:active { cursor: grabbing; }
+/* Scheduled items get a hairline spine rather than a full border. */
+.todo-item.scheduled { box-shadow: inset 2px 0 0 var(--accent); }
+.todo-item.done { opacity: 0.45; }
+.todo-item.done .todo-text { text-decoration: line-through; }
+.todo-item input[type=checkbox] {
+  margin: 1px 0 0; width: 15px; height: 15px; flex-shrink: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
+.todo-text { flex: 1; font-size: 13.5px; line-height: 1.45; word-break: break-word; }
+.todo-meta { font-size: 11px; color: var(--accent-strong); margin-top: 3px; }
+.todo-text .todo-code { color: var(--accent-strong); font-weight: 600; }
+.todo-del {
+  border: none; background: transparent; color: var(--ink-3);
+  font-size: 13px; line-height: 1; padding: 2px 4px; cursor: pointer;
+  opacity: 0; transition: opacity var(--ease), color var(--ease);
+}
+.todo-item:hover .todo-del { opacity: 1; }
+.todo-del:hover { color: var(--danger); }
+
+.project-todo-add-form, .project-todo-list { max-width: 460px; }
+.project-todo-list { margin: 12px 0 4px; }
+
+/* ---------- controls ---------------------------------------------------
+   Two weights only: one filled action, everything else ghost. Bordered
+   buttons everywhere were the biggest source of visual noise.             */
+
+.primary-btn {
+  border: none; background: var(--accent); color: #fff;
+  padding: 8px 16px; border-radius: var(--r-sm);
+  font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: background var(--ease), transform var(--ease);
+}
+.primary-btn:hover { background: var(--accent-strong); }
+.primary-btn:active { transform: scale(0.97); }
+
+.secondary-btn {
+  border: none; background: transparent; color: var(--ink-2);
+  padding: 8px 14px; border-radius: var(--r-sm);
+  font-family: inherit; font-size: 13px; cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+.secondary-btn:hover { background: var(--surface-2); color: var(--ink); }
+
+.danger-btn {
+  border: none; background: transparent; color: var(--danger);
+  padding: 8px 14px; border-radius: var(--r-sm);
+  font-family: inherit; font-size: 13px; cursor: pointer;
+  transition: background var(--ease);
+}
+.danger-btn:hover { background: var(--danger-soft); }
+
+.link-btn {
+  border: none; background: transparent; color: var(--accent-strong);
+  font-family: inherit; font-size: 13px; padding: 4px 0; margin-bottom: 12px; cursor: pointer;
+  transition: opacity var(--ease);
+}
+.link-btn:hover { opacity: 0.7; }
+
+/* Filled inputs — no resting border, so forms read as surfaces not cages. */
+input[type=text], input[type=datetime-local], textarea, select {
+  font-family: inherit; font-size: 13.5px; color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  transition: background var(--ease), border-color var(--ease), box-shadow var(--ease);
+}
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+input[type=text]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
+  outline: none; background: var(--surface);
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+select { cursor: pointer; }
+
+/* ---------- calendar ---------------------------------------------------
+   The grid is the hero: no frame around it, hairlines only, and today's
+   column tinted rather than outlined.                                     */
+
+.cal-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; }
+.cal-toolbar button {
+  border: none; background: transparent; color: var(--ink-2);
+  min-width: 32px; height: 32px; padding: 0 10px;
+  border-radius: 100px; font-family: inherit; font-size: 13px; cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+.cal-toolbar button:hover { background: var(--surface-2); color: var(--ink); }
+.cal-range {
+  font-family: var(--font-serif); font-weight: 600; font-size: 16px;
+  letter-spacing: -0.01em; min-width: 208px; padding: 0 6px;
+}
+.cal-toolbar .spacer { flex: 1; }
+
+.icloud-btn {
+  border: 1px solid var(--line); background: transparent; color: var(--ink-3);
+  border-radius: 100px; padding: 5px 13px;
+  font-family: inherit; font-size: 12px; cursor: pointer;
+  transition: background var(--ease), border-color var(--ease), color var(--ease);
+}
+.icloud-btn:hover { background: var(--surface-2); }
+.icloud-btn.connected { color: var(--success); border-color: transparent; background: var(--success-soft); }
+.icloud-btn.error { color: var(--danger); border-color: transparent; background: var(--danger-soft); }
+
+.cal-scroll { overflow-x: auto; }
+.calendar-grid {
+  display: grid;
+  grid-template-columns: 54px repeat(7, minmax(118px, 1fr));
+  min-width: 900px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.cal-head {
+  padding: 11px 4px 10px;
+  text-align: center;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em;
+  color: var(--ink-2);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+  border-left: 1px solid var(--line-soft);
+  position: sticky; top: 0; z-index: 4;
+}
+.cal-head.weekend { color: var(--ink-3); font-weight: 500; }
+.cal-head.today { color: var(--accent-strong); }
+.cal-corner { border-bottom: 1px solid var(--line-soft); background: var(--surface); position: sticky; top: 0; z-index: 4; }
+
+.cal-hourlabel {
+  height: 40px;
+  font-size: 10px; color: var(--ink-3);
+  text-align: right; padding-right: 8px;
+  transform: translateY(-6px);
+}
+
+.cal-daycol {
+  position: relative;
+  border-left: 1px solid var(--line-soft);
+  background-image: repeating-linear-gradient(
+    to bottom, transparent, transparent 39px, var(--line-soft) 39px, var(--line-soft) 40px);
+}
+.cal-daycol.weekend { background-color: rgba(35, 33, 28, 0.014); }
+.cal-daycol.today { background-color: var(--accent-soft); }
+.cal-cell { height: 40px; cursor: pointer; transition: background var(--ease); }
+.cal-cell:hover { background: rgba(35, 33, 28, 0.05); }
+
+.cal-now-line {
+  position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1.5px solid #d6483a; z-index: 3; pointer-events: none;
+}
+.cal-now-line::before {
+  content: ""; position: absolute; left: -3px; top: -3.5px;
+  width: 7px; height: 7px; border-radius: 50%; background: #d6483a;
+}
+
+.cal-event {
+  position: absolute; left: 3px; right: 3px; z-index: 2;
+  border-radius: 6px; padding: 4px 7px;
+  font-size: 11.5px; line-height: 1.32; color: #fff;
+  overflow: hidden; cursor: pointer;
+  transition: filter var(--ease), transform var(--ease), box-shadow var(--ease);
+}
+.cal-event:hover { filter: saturate(1.15) brightness(1.04); box-shadow: var(--lift); }
+.cal-event { cursor: grab; user-select: none; }
+.cal-event.dragging {
+  cursor: grabbing; opacity: 0.9; z-index: 6;
+  box-shadow: var(--float); filter: none;
+}
+/* Bottom edge stretches the block; only offered on hover so the grid stays calm. */
+.block-grip {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 7px;
+  cursor: ns-resize; opacity: 0;
+}
+.cal-event:hover .block-grip, .focus-block:hover .block-grip { opacity: 1; }
+.block-grip::after {
+  content: ""; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%);
+  width: 20px; height: 2px; border-radius: 2px; background: currentColor; opacity: 0.5;
+}
+/* Name first so a short block still says what it is; the time line is the
+   part that gets clipped when there is no room. */
+.cal-event .ev-name {
+  display: block; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cal-event .ev-time { display: block; font-size: 10px; opacity: 0.82; }
+/* Read-only mirrors of other Apple calendars: present, but recessive. */
+/* Blocks carry their calendar's hue. Todos is solid and saturated; the
+   other calendars are washed back to a tint so your own scheduling reads
+   first while staying colour-identifiable. */
+.cal-event.solid { color: #fff; }
+.cal-event.tinted {
+  background: hsl(var(--block-hue) 58% 52% / 0.15);
+  color: hsl(var(--block-hue) 52% 26%);
+  border-left: 3px solid hsl(var(--block-hue) 58% 46% / 0.55);
+}
+.cal-event.tinted .ev-time { opacity: 0.72; }
+.cal-event.tinted:hover {
+  filter: none;
+  background: hsl(var(--block-hue) 58% 52% / 0.24);
+  border-left-color: hsl(var(--block-hue) 58% 44% / 0.9);
+}
+.cal-event.external .ev-time { opacity: 0.75; }
+
+/* ---------- cards ------------------------------------------------------ */
+
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 14px; margin-top: 14px; }
+.card {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: 16px 18px;
+  cursor: pointer;
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease);
+}
+.card:hover { border-color: var(--accent); box-shadow: var(--lift); transform: translateY(-2px); }
+.card-title { font-family: var(--font-serif); font-weight: 600; font-size: 16px; line-height: 1.3; letter-spacing: -0.01em; }
+.card-preview { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; max-height: 4.65em; overflow: hidden; }
+.card-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.card-footer { margin-top: auto; padding-top: 2px; font-size: 11px; color: var(--ink-3); }
+
+/* Star: a one-press control that sits on the card without competing with
+   its title, so it stays quiet until hovered or actually set. */
+.card { position: relative; }
+.card .star-btn { position: absolute; top: 10px; right: 10px; }
+.star-btn {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 3px;
+  color: var(--ink-3); opacity: 0;
+  transition: opacity var(--ease), color var(--ease), transform var(--ease);
+}
+.card:hover .star-btn, .star-btn.on, .star-btn:focus-visible { opacity: 1; }
+.star-btn.on { color: var(--c-ideas); }
+.star-btn:hover { color: var(--c-ideas); transform: scale(1.15); }
+.star-btn.inline { position: static; opacity: 1; font-size: 18px; }
+.modal-header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* Leave room for the star so long titles don't run under it. */
+.card .card-title { padding-right: 24px; }
+
+.tag-chip {
+  font-size: 10.5px; letter-spacing: 0.01em;
+  background: var(--accent-soft); color: var(--accent-strong);
+  padding: 3px 9px; border-radius: 100px;
+}
+.badge-row { display: flex; gap: 6px; align-items: center; }
+.status-badge {
+  align-self: flex-start; font-size: 10.5px;
+  background: var(--surface-2); color: var(--ink-2);
+  padding: 3px 9px; border-radius: 100px;
+}
+.code-badge {
+  align-self: flex-start;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  background: var(--accent-soft); color: var(--accent-strong);
+  padding: 3px 8px; border-radius: 5px;
+}
+
+#project-detail-header {
+  background: transparent; border: none; padding: 0;
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 18px; margin-bottom: 6px;
+}
+#project-detail-header .card-title { font-size: 24px; margin: 6px 0 2px; }
+#project-detail-header .modal-actions { justify-content: flex-start; margin-top: 12px; }
+
+/* ---------- idea capture ----------------------------------------------- */
+
+.idea-add-form {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: 16px;
+}
+.idea-add-form textarea { width: 100%; resize: vertical; }
+.idea-add-form > input[type=text]#idea-title-input {
+  font-family: var(--font-serif); font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+  padding: 9px 11px;
+}
+.idea-add-row { display: flex; gap: 8px; }
+.idea-add-row input { flex: 1; }
+.idea-filter-row { display: flex; align-items: center; gap: 10px; margin: 20px 0 2px; }
+.idea-filter-row select { font-size: 13px; }
+
+/* ---------- modals ------------------------------------------------------ */
+
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  /* Deliberately no backdrop-filter: blurring a full-viewport layer forces
+     the compositor to promote and re-rasterise everything behind it, which
+     showed up as a flash each time a dialog opened. A slightly deeper flat
+     scrim does the same job for free. */
+  background: rgba(30, 26, 16, 0.4);
+  display: flex; align-items: center; justify-content: center;
+  /* No animation here on purpose. This element covers the viewport, so any
+     entrance on it reads as the *page* flashing — and with the default
+     fill-mode the browser could paint one frame at the base (fully dark)
+     style before the keyframes took hold. The scrim just appears. */
+}
+.modal-backdrop.hidden, .hidden { display: none !important; }
+.modal {
+  width: 540px; max-width: 92vw; max-height: 86vh; overflow-y: auto;
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  padding: 26px 28px;
+  box-shadow: var(--float);
+  /* Transform-only, and `backwards` so the first painted frame is already
+     the 0% state. The dialog is never rendered invisible, so there is no
+     blank frame to catch. */
+  animation: pop 170ms var(--ease) backwards;
+}
+@keyframes pop { from { transform: translateY(6px) scale(0.99); } to { transform: none; } }
+.modal.modal-lg { width: 840px; max-width: 95vw; max-height: 92vh; }
+.modal h3 { margin: 0 0 16px; font-size: 19px; }
+.modal-header-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.modal-header-row h3 { margin: 0; }
+/* The header action is the main affordance in read mode, so unlike other
+   ghost buttons it keeps a resting surface. */
+.modal-header-row .secondary-btn { background: var(--surface-2); flex-shrink: 0; }
+.modal-header-row .secondary-btn:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.modal label {
+  display: block; margin: 14px 0 5px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--ink-3);
+}
+.modal label .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.modal input[type=text], .modal input[type=datetime-local], .modal textarea, .modal select { width: 100%; }
+.modal textarea { resize: vertical; }
+.modal-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 24px; }
+.modal-actions .spacer { flex: 1; }
+.field-row { display: flex; gap: 12px; }
+.field-row > div { flex: 1; }
+
+/* ---------- long-form reading & editing --------------------------------- */
+
+.text-view { font-size: 15px; line-height: 1.72; color: var(--ink); min-height: 120px; }
+.text-view h1, .text-view h2, .text-view h3, .text-view h4 {
+  font-family: var(--font-serif); font-weight: 600; line-height: 1.28; margin: 1.1em 0 0.35em;
+}
+.text-view h1 { font-size: 1.5em; }
+.text-view h2 { font-size: 1.28em; }
+.text-view h3 { font-size: 1.12em; }
+.text-view h4 { font-size: 1em; }
+.text-view p { margin: 0 0 0.85em; white-space: pre-wrap; }
+.text-view ul, .text-view ol { margin: 0 0 0.85em; padding-left: 1.35em; }
+.text-view li { margin: 0.25em 0; }
+/* A blank line anywhere inside a list makes the whole list "loose", and
+   Markdown then wraps every item in a <p>. Left alone, that <p> adds
+   paragraph spacing on top of the item spacing, so two lists of the same
+   bullets sit at very different rhythms depending on one blank line the
+   writer may not remember typing — which is exactly how the recap ended up
+   with Study tight and Life airy. Items space themselves; the paragraph
+   inside an item does not. A second paragraph in the same item still needs
+   separating, but less than the gap between two top-level paragraphs, or a
+   split bullet would look further apart than two separate ones. */
+.text-view li > p { margin: 0; }
+.text-view li > p + p { margin-top: 0.5em; }
+.text-view li > ul, .text-view li > ol { margin: 0.25em 0 0; }
+.text-view strong { font-weight: 650; }
+.text-view em { font-style: italic; }
+.text-view a { color: var(--accent-strong); text-underline-offset: 2px; }
+.text-view code {
+  font-family: var(--font-mono); font-size: 0.87em;
+  background: var(--surface-2); padding: 1.5px 5px; border-radius: 4px;
+}
+.text-view pre {
+  background: var(--surface-2); padding: 12px 14px; border-radius: var(--r-sm);
+  overflow-x: auto; margin: 0 0 0.85em;
+}
+.text-view pre code { background: none; padding: 0; }
+.text-view blockquote {
+  margin: 0 0 0.85em; padding-left: 14px;
+  border-left: 2px solid var(--accent-soft); color: var(--ink-2);
+}
+.text-view hr { border: none; border-top: 1px solid var(--line-soft); margin: 1.4em 0; }
+.text-view > *:first-child { margin-top: 0; }
+.text-view > *:last-child { margin-bottom: 0; }
+
+/* Editing should feel like the document, not like a form. */
+.modal .plain-field, .plain-field {
+  display: block; width: 100%; margin: 0;
+  font-family: inherit; color: var(--ink); resize: vertical;
+  border: none !important; outline: none !important;
+  background: transparent !important; padding: 0 !important; border-radius: 0 !important;
+}
+.plain-field.body-edit { font-size: 15px; line-height: 1.72; min-height: 420px; }
+.plain-field.title-edit { font-family: var(--font-serif); font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+.plain-field.synopsis-edit { font-size: 13px; color: var(--ink-2); }
+.plain-field::placeholder { color: var(--ink-3); }
+
+.md-edit-split { display: flex; gap: 26px; align-items: flex-start; }
+.md-edit-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.md-col-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); margin-bottom: 10px;
+}
+.md-source { max-height: 440px; overflow-y: auto; }
+.md-preview {
+  max-height: 440px; overflow-y: auto;
+  padding-left: 26px; border-left: 1px solid var(--line-soft);
+}
+.body-edit.compact { min-height: 132px; }
+.md-preview.compact { min-height: 132px; max-height: 200px; font-size: 13.5px; }
+
+/* ---------- focus ------------------------------------------------------- */
+
+.focus-top-row { display: flex; gap: 28px; align-items: stretch; flex-wrap: wrap; margin-bottom: 34px; }
+
+/* The timer is the single loudest element in the app — the card around it
+   gets out of the way entirely. */
+.focus-card {
+  flex: 0 0 320px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 16px; padding: 32px 28px; text-align: center;
+  background: var(--accent-soft);
+  border-radius: var(--r-lg);
+}
+.focus-timer-display {
+  font-family: var(--font-serif); font-size: 58px; font-weight: 600;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1;
+  color: var(--accent-strong);
+}
+.focus-link-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.link-picker-btn {
+  border: none; background: rgba(255, 255, 255, 0.75); color: var(--ink);
+  border-radius: 100px; padding: 6px 14px;
+  font-family: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background var(--ease);
+}
+.link-picker-btn:hover:not(:disabled) { background: #fff; }
+.link-picker-btn:disabled { cursor: default; opacity: 0.75; }
+.focus-toggle-btn {
+  border: none; background: var(--accent); color: #fff;
+  padding: 13px 38px; border-radius: 100px;
+  font-family: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: background var(--ease), transform var(--ease);
+}
+.focus-toggle-btn:hover { background: var(--accent-strong); }
+.focus-toggle-btn:active { transform: scale(0.97); }
+.focus-toggle-btn.running { background: var(--danger); }
+.focus-toggle-btn.running:hover { background: #a4432f; }
+.focus-hint { max-width: 260px; }
+
+.focus-summary-panel {
+  flex: 1 1 400px; min-width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  padding: 20px 24px 24px;
+}
+.focus-summary-panel .panel-header { margin-bottom: 6px; }
+.focus-summary-panel .panel-header h3 { margin: 0; }
+.focus-summary-panel .cal-toolbar { margin-bottom: 14px; }
+.focus-summary-panel .cal-range { font-size: 14px; min-width: 0; flex: 1; }
+
+.focus-seg { display: flex; gap: 2px; background: var(--surface-2); border-radius: 100px; padding: 3px; }
+.focus-seg-btn {
+  border: none; background: transparent; color: var(--ink-2);
+  padding: 5px 13px; border-radius: 100px;
+  font-family: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+.focus-seg-btn:hover { color: var(--ink); }
+.focus-seg-btn.active { background: var(--surface); color: var(--accent-strong); font-weight: 600; }
+
+.focus-summary-total { font-size: 13px; color: var(--ink-2); margin-bottom: 2px; }
+.focus-summary-total-value {
+  font-family: var(--font-serif); font-weight: 600; font-size: 30px;
+  letter-spacing: -0.02em; color: var(--accent-strong);
+}
+
+.focus-chart {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 132px; margin: 22px 0 4px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.focus-bar-col {
+  flex: 1; min-width: 0; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px;
+}
+.focus-bar {
+  width: 100%; max-width: 26px; min-height: 3px;
+  background: var(--accent); border-radius: 4px 4px 0 0;
+  transition: height var(--ease), background var(--ease);
+}
+.focus-bar-col:hover .focus-bar { background: var(--accent-strong); }
+.focus-bar-label { font-size: 10px; color: var(--ink-3); white-space: nowrap; }
+
+.focus-tasklist-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); margin: 22px 0 10px;
+}
+.focus-task-list { display: flex; flex-direction: column; }
+.focus-task-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  padding: 10px 2px; font-size: 13.5px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.focus-task-row:last-child { border-bottom: none; }
+.focus-task-duration {
+  flex-shrink: 0; font-family: var(--font-serif); font-weight: 600; font-size: 15px;
+  color: var(--accent-strong);
+}
+
+.focus-block {
+  position: absolute; left: 3px; right: 3px; z-index: 2;
+  border-radius: 6px; padding: 4px 7px;
+  font-size: 11.5px; line-height: 1.32; color: #fff;
+  background: var(--c-focus);
+  overflow: hidden; cursor: pointer;
+  transition: filter var(--ease), transform var(--ease), box-shadow var(--ease);
+}
+.focus-block:hover { filter: brightness(1.06); box-shadow: var(--lift); transform: translateY(-1px); }
+.focus-block.running {
+  background-image: repeating-linear-gradient(45deg,
+    rgba(255,255,255,0) 0 7px, rgba(255,255,255,0.22) 7px 14px);
+}
+
+.link-picker-search { width: 100%; margin-bottom: 14px; }
+.link-picker-results { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.link-picker-group-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); margin: 16px 0 6px;
+}
+.link-picker-group-label:first-child { margin-top: 0; }
+.link-picker-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  padding: 9px 10px; border-radius: var(--r-sm);
+  font-size: 13.5px; cursor: pointer;
+  transition: background var(--ease);
+}
+.link-picker-row:hover { background: var(--accent-soft); }
+.link-picker-row .hint { flex-shrink: 0; font-size: 11.5px; }
+
+/* ---------- journal ----------------------------------------------------- */
+
+.journal-mode-toggle { display: flex; gap: 2px; background: var(--surface-2); border-radius: 100px; padding: 3px; }
+.mode-btn {
+  border: none; background: transparent; color: var(--ink-2);
+  padding: 5px 15px; border-radius: 100px;
+  font-family: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+.mode-btn:hover { color: var(--ink); }
+.mode-btn.active { background: var(--surface); color: var(--accent-strong); font-weight: 600; }
+
+/* A dot on the tab when last week's recap is still unwritten. */
+.tab-btn.has-dot { position: relative; }
+.tab-btn.has-dot::after {
+  content: ""; position: absolute; top: 5px; right: 7px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--c-journal);
+}
+
+.recap-nudge {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  background: var(--accent-soft); border-radius: var(--r);
+  padding: 14px 18px; margin-bottom: 18px; font-size: 13.5px;
+}
+.recap-nudge strong { color: var(--accent-strong); }
+.recap-nudge-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Week strip — comparison surface and navigation in one. */
+.recap-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 22px; }
+.recap-chip {
+  flex: 0 0 138px; display: flex; flex-direction: column; gap: 5px;
+  text-align: left; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line-soft);
+  border-radius: var(--r); padding: 11px 13px;
+  font-family: inherit;
+  transition: border-color var(--ease), box-shadow var(--ease), transform var(--ease);
+}
+.recap-chip:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--lift); }
+.recap-chip.selected { border-color: var(--accent); background: var(--accent-soft); }
+.recap-chip-range { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+.recap-chip-score {
+  font-family: var(--font-serif); font-size: 24px; font-weight: 600;
+  line-height: 1; letter-spacing: -0.02em; color: var(--accent-strong);
+}
+.recap-chip:not(.written) .recap-chip-score { color: var(--ink-3); }
+.recap-chip-bar { display: block; height: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.recap-chip-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.recap-chip-focus { font-size: 10.5px; color: var(--ink-3); }
+
+.recap-week-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  margin-bottom: 16px;
+}
+.recap-week-head h3 { margin: 0; font-size: 22px; }
+
+.recap-evidence {
+  background: var(--surface); border: 1px solid var(--line-soft);
+  border-radius: var(--r); padding: 18px 20px; margin-bottom: 16px;
+}
+.recap-evidence-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); margin-bottom: 12px;
+}
+.stat-row { display: flex; flex-wrap: wrap; gap: 26px; }
+.stat-tile { min-width: 78px; }
+.stat-value {
+  font-family: var(--font-serif); font-size: 22px; font-weight: 600;
+  letter-spacing: -0.02em; line-height: 1.15; color: var(--ink);
+}
+.stat-label { font-size: 11.5px; color: var(--ink-2); margin-top: 3px; }
+.stat-hint { font-size: 10.5px; color: var(--ink-3); }
+.recap-tasks { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.recap-tasks ul { list-style: none; margin: 0; padding: 0; }
+.recap-tasks li {
+  display: flex; justify-content: space-between; gap: 14px;
+  font-size: 13px; padding: 5px 0;
+}
+.recap-task-time { color: var(--accent-strong); font-weight: 600; flex-shrink: 0; }
+
+/* Ratings band — the only judgement on the page, and it is all yours. */
+.recap-ratings {
+  display: flex; align-items: center; gap: 32px; flex-wrap: wrap;
+  background: var(--accent-soft); border-radius: var(--r);
+  padding: 16px 20px; margin-bottom: 18px;
+}
+.recap-score { text-align: center; flex-shrink: 0; }
+.recap-score-value {
+  font-family: var(--font-serif); font-size: 40px; font-weight: 600;
+  line-height: 1; letter-spacing: -0.02em; color: var(--accent-strong);
+}
+.recap-score-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--accent-strong); opacity: 0.75; margin-top: 5px;
+}
+.recap-dials { display: flex; gap: 26px; flex-wrap: wrap; }
+.dial-label { font-size: 11.5px; color: var(--ink-2); margin-bottom: 6px; }
+.dial-dots { display: flex; gap: 5px; }
+.dial-dots .dot {
+  width: 15px; height: 15px; padding: 0; border-radius: 50%;
+  border: 1.5px solid var(--accent); background: transparent;
+  cursor: pointer; transition: background var(--ease), transform var(--ease);
+}
+.dial-dots .dot.on { background: var(--accent); }
+.dial-dots .dot:disabled { cursor: default; opacity: 0.85; }
+.dial-dots .dot:not(:disabled):hover { transform: scale(1.18); }
+
+.recap-actions { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 14px; }
+.recap-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.recap-col {
+  background: var(--surface); border: 1px solid var(--line-soft);
+  border-radius: var(--r); padding: 16px 18px;
+}
+.recap-col-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--accent-strong); margin-bottom: 12px;
+}
+.recap-col .text-view { min-height: 0; font-size: 14px; }
+.recap-col .empty-state { padding: 0; font-size: 12.5px; font-style: italic; }
+.recap-text { min-height: 220px; font-size: 14px; line-height: 1.65; }
+@media (max-width: 1080px) { .recap-columns { grid-template-columns: 1fr; } }
+
+/* Compare view — same three sections, read across weeks. */
+.recap-compare-grid { display: grid; gap: 0; align-items: stretch; }
+.rc-corner { border-bottom: 1px solid var(--line); }
+.rc-head { padding: 10px 14px; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line-soft); }
+.rc-head-range { font-size: 11.5px; color: var(--ink-2); }
+.rc-head-score {
+  font-family: var(--font-serif); font-size: 22px; font-weight: 600;
+  letter-spacing: -0.02em; color: var(--accent-strong); line-height: 1.2;
+}
+.rc-rowlabel {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); padding: 14px 10px 14px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.rc-cell {
+  padding: 14px; border-left: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+.rc-cell .text-view { min-height: 0; font-size: 13px; line-height: 1.6; }
+.rc-metric { font-family: var(--font-serif); font-size: 16px; font-weight: 600; }
+
+/* ---------- pulling calendar events into the weekly recap ---------------
+   Events used to sit in a panel of their own above the prose. They are
+   bullets in the prose now, so all that is left is the button that adds
+   them — under the field it writes into, not above it. */
+.linked-add { margin-top: 8px; padding-left: 0; }
+
+.rl-row {
+  /* It is a <label> for the checkbox, so undo the modal's label styling. */
+  text-transform: none; letter-spacing: normal; font-weight: 400;
+  color: var(--ink); margin: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; font-size: 13.5px;
+  transition: background var(--ease);
+}
+.rl-row:hover { background: var(--accent-soft); }
+.rl-row input { accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; }
+.rl-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- toasts
+   Calendar writes run behind the page, so a failure or an iCloud warning
+   arrives after you have moved on. A blocking alert() would undo the whole
+   point of not waiting; these say it in the corner and leave.
+
+   Transform-only entrance with `backwards` fill, for the same reason the
+   modal uses one: an element that starts at opacity 0 gets a compositor
+   promotion and the page flashes. */
+.toast-stack {
+  position: fixed; z-index: 200;
+  right: 20px; bottom: 20px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  max-width: 380px;
+  padding: 11px 14px;
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink-3);
+  box-shadow: var(--lift);
+  font-size: 13px; line-height: 1.45; color: var(--ink);
+  animation: toast-in 180ms var(--ease) backwards;
+}
+.toast.error   { border-left-color: var(--danger); }
+.toast.warn    { border-left-color: var(--c-ideas); }
+.toast.leaving { animation: toast-out 160ms var(--ease) forwards; }
+@keyframes toast-in  { from { transform: translateY(8px); } to { transform: none; } }
+@keyframes toast-out { from { transform: none; } to { transform: translateY(8px); opacity: 0; } }

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PhD Life Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">PhD Life Manager</div>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="calendar">Calendar</button>
+      <button class="tab-btn" data-tab="ideas">Idea Board</button>
+      <button class="tab-btn" data-tab="projects">Projects</button>
+      <button class="tab-btn" data-tab="focus">Focus</button>
+      <button class="tab-btn" data-tab="journal">Journal</button>
+    </nav>
+  </header>
+
+  <div class="layout">
+
+    <aside class="sidebar">
+      <h2>To-dos</h2>
+      <form id="todo-form" class="todo-add-form">
+        <input type="text" id="todo-input" placeholder="Add a to-do…" autocomplete="off" required />
+        <button type="submit">+</button>
+      </form>
+      <p class="hint">Drag a to-do onto the calendar to time-block it. Unscheduled ones just sit here — flexible, no pressure.</p>
+      <ul id="todo-list" class="todo-list"></ul>
+    </aside>
+
+    <main class="content">
+
+      <section id="tab-calendar" class="tab-panel active">
+        <div class="cal-toolbar">
+          <button id="cal-prev">&larr;</button>
+          <div id="cal-range" class="cal-range">—</div>
+          <button id="cal-next">&rarr;</button>
+          <button id="cal-today">Today</button>
+          <div class="spacer"></div>
+          <button id="icloud-status-btn" class="icloud-btn">iCloud: checking…</button>
+        </div>
+        <div class="cal-scroll">
+          <div id="calendar-grid" class="calendar-grid"></div>
+        </div>
+      </section>
+
+      <section id="tab-ideas" class="tab-panel">
+        <div class="panel-header">
+          <h2>Scattered Ideas</h2>
+          <p class="hint">Dump raw paragraphs here. Everything lives in one plain text file — <code>data/ideas.txt</code>.</p>
+        </div>
+        <form id="idea-form" class="idea-add-form">
+          <input type="text" id="idea-title-input" placeholder="Title (optional — auto-filled from the first line if left blank)" />
+          <div class="md-edit-split">
+            <div class="md-edit-col">
+              <div class="md-col-label">Markdown</div>
+              <textarea id="idea-input" class="md-source body-edit compact" placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…" rows="4" required></textarea>
+            </div>
+            <div class="md-edit-col">
+              <div class="md-col-label">Preview</div>
+              <div id="idea-input-preview" class="text-view md-preview compact"></div>
+            </div>
+          </div>
+          <div class="idea-add-row">
+            <input type="text" id="idea-tags-input" placeholder="tags, comma, separated" />
+            <button type="submit" class="primary-btn">Add idea</button>
+          </div>
+        </form>
+        <div class="idea-filter-row">
+          <label for="idea-tag-filter" class="hint">Filter by tag</label>
+          <select id="idea-tag-filter">
+            <option value="">All tags</option>
+          </select>
+        </div>
+        <div id="idea-grid" class="card-grid"></div>
+      </section>
+
+      <section id="tab-projects" class="tab-panel">
+        <div id="projects-list-view">
+          <div class="panel-header">
+            <h2>Projects</h2>
+            <button id="new-project-btn" class="primary-btn">+ New project</button>
+          </div>
+          <div id="project-grid" class="card-grid"></div>
+        </div>
+
+        <div id="project-detail-view" class="hidden">
+          <button id="back-to-projects" class="link-btn">&larr; All projects</button>
+          <div id="project-detail-header"></div>
+
+          <div class="panel-header">
+            <h3>To-dos</h3>
+          </div>
+          <form id="project-todo-form" class="todo-add-form project-todo-add-form">
+            <input type="text" id="project-todo-input" placeholder="Add a to-do for this project…" autocomplete="off" required />
+            <button type="submit">+</button>
+          </form>
+          <ul id="project-todo-list" class="todo-list project-todo-list"></ul>
+
+          <div class="panel-header">
+            <h3>Memos</h3>
+            <button id="new-memo-btn" class="primary-btn">+ New memo</button>
+          </div>
+          <div id="memo-grid" class="card-grid"></div>
+        </div>
+      </section>
+
+      <section id="tab-focus" class="tab-panel">
+        <div class="panel-header">
+          <h2>Focus</h2>
+        </div>
+        <div class="focus-top-row">
+          <div class="focus-card">
+            <div class="focus-timer-display" id="focus-timer-display">00:00:00</div>
+            <div class="focus-link-row">
+              <span class="hint">Linked to</span>
+              <button class="link-picker-btn" id="focus-link-btn">Choose a task…</button>
+            </div>
+            <button class="focus-toggle-btn" id="focus-toggle-btn">Start Focus</button>
+            <p class="hint focus-hint">Press to go phone-free. Press again the moment you reach for your phone or get pulled away.</p>
+          </div>
+
+          <div class="focus-summary-panel">
+            <div class="panel-header">
+              <h3>Summary</h3>
+              <div class="focus-seg" id="focus-summary-mode-toggle">
+                <button class="focus-seg-btn active" data-mode="day">Day</button>
+                <button class="focus-seg-btn" data-mode="week">Week</button>
+                <button class="focus-seg-btn" data-mode="month">Month</button>
+              </div>
+            </div>
+            <div class="cal-toolbar">
+              <button id="focus-summary-prev">&larr;</button>
+              <div id="focus-summary-range" class="cal-range">—</div>
+              <button id="focus-summary-next">&rarr;</button>
+              <button id="focus-summary-today">Today</button>
+            </div>
+            <div id="focus-summary"></div>
+          </div>
+        </div>
+
+        <div class="panel-header">
+          <h3>Time log</h3>
+        </div>
+        <div class="cal-toolbar">
+          <button id="focus-cal-prev">&larr;</button>
+          <div id="focus-cal-range" class="cal-range">—</div>
+          <button id="focus-cal-next">&rarr;</button>
+          <button id="focus-cal-today">Today</button>
+        </div>
+        <div class="cal-scroll">
+          <div id="focus-calendar-grid" class="calendar-grid"></div>
+        </div>
+      </section>
+
+      <section id="tab-journal" class="tab-panel">
+        <div class="panel-header">
+          <h2>Weekly Recap</h2>
+          <div class="journal-mode-toggle">
+            <button class="mode-btn active" id="recap-view-single" data-view="single">This week</button>
+            <button class="mode-btn" id="recap-view-compare" data-view="compare">Compare</button>
+          </div>
+        </div>
+
+        <div id="recap-nudge" class="recap-nudge hidden"></div>
+        <div id="recap-strip" class="recap-strip"></div>
+
+        <div id="recap-single">
+          <div id="recap-evidence"></div>
+          <div id="recap-ratings"></div>
+          <div id="recap-sections"></div>
+        </div>
+
+        <div id="recap-compare" class="recap-compare hidden"></div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- Generic modal -->
+<div id="modal-backdrop" class="modal-backdrop hidden">
+  <div id="modal" class="modal"></div>
+</div>
+
+<!-- Calendar writes happen behind the page now, so anything that goes wrong
+     has to be said without stopping what you are doing. -->
+<div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12/lib/marked.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
