@@ -177,6 +177,18 @@ that link would orphan the event on the far side.
   pull from iCloud still lists it, and it was only hidden because a local record
   claimed its uid — remove the record alone and the block reappears in another
   colour, which reads as the delete having failed.
+- **Markdown is edited on one surface, not two.** Memos and ideas used to show
+  a source pane beside a preview pane; that halved the space to write in and
+  made the dialog resize between reading and editing. There is now a single
+  full-width editor with a Write/Preview switch (`markdownEditorHtml()` /
+  `wireMarkdownEditor()`), and `--md-body-h` keeps Write, Preview and the
+  read-only `.md-body` the same height so nothing under them moves.
+- **⌘B / ⌘I / ⌘U / ⌘L work in every markdown field**, and lists carry on by
+  themselves on Enter, ending when you press it on an empty item. All of it is
+  in `attachMarkdownShortcuts()`. Edits go through `setRangeText`, not by
+  reassigning `.value` — the latter throws away the browser's undo stack.
+  Markdown has no underline, so ⌘U writes `<u>…</u>`, which is what Obsidian
+  does and what the renderer already passes through.
 - **The page keeps itself current** (see the liveness section of `app.js`):
   now-line every 30s, data on refocus, background pull every 5min. Refreshes
   are skipped while a dialog is open or a block is being dragged.

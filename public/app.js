@@ -121,6 +121,167 @@ const CAL_HOUR_PX = 40;
 // negative offset (drawing over the headers) and anything running long —
 // an overnight session someone forgot to stop, an all-day Apple event —
 // overflows the grid and pushes the page around.
+// ---------------------------------------------------------------- markdown editor
+//
+// One writing surface, the width of the dialog, with a Write/Preview switch —
+// rather than a source pane and a preview pane splitting the space in half.
+// Splitting it meant neither side was big enough to write in, and the dialog
+// changed size between reading and editing.
+//
+// The shortcuts are the ones every editor has, because markdown syntax is
+// something you should be able to not think about: ⌘B, ⌘I, ⌘U, ⌘L. Lists
+// carry on by themselves on Enter and end when you press it on an empty item.
+
+const MD_LIST_RE = /^(\s*)([-*+]|\d+[.)])(\s+\[[ xX]\])?(\s+)(.*)$/;
+
+function mdLineBounds(value, from, to) {
+  const start = value.lastIndexOf("\n", from - 1) + 1;
+  let end = value.indexOf("\n", to);
+  if (end === -1) end = value.length;
+  return [start, end];
+}
+
+function mdReplace(ta, start, end, text, selStart, selEnd) {
+  // setRangeText keeps the browser's own undo stack intact, which manually
+  // reassigning .value throws away.
+  ta.setRangeText(text, start, end, "preserve");
+  ta.selectionStart = selStart;
+  ta.selectionEnd = selEnd === undefined ? selStart : selEnd;
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+// ⌘B / ⌘I: wrap the selection, or unwrap it if it is already wrapped, so the
+// same keystroke turns the style off again.
+function mdToggleWrap(ta, open, close = open) {
+  const { selectionStart: s, selectionEnd: e, value } = ta;
+  const sel = value.slice(s, e);
+  const before = value.slice(0, s), after = value.slice(e);
+
+  if (before.endsWith(open) && after.startsWith(close)) {
+    mdReplace(ta, s - open.length, e + close.length, sel, s - open.length, e - open.length);
+    return;
+  }
+  if (sel.length >= open.length + close.length && sel.startsWith(open) && sel.endsWith(close)) {
+    const inner = sel.slice(open.length, sel.length - close.length);
+    mdReplace(ta, s, e, inner, s, s + inner.length);
+    return;
+  }
+  mdReplace(ta, s, e, open + sel + close, s + open.length, s + open.length + sel.length);
+}
+
+// ⌘L: turn the touched lines into a list, or back into plain lines.
+function mdToggleList(ta) {
+  const { selectionStart: s, selectionEnd: e, value } = ta;
+  const [from, to] = mdLineBounds(value, s, e);
+  const lines = value.slice(from, to).split("\n");
+  const meaningful = lines.filter(l => l.trim());
+  const allListed = meaningful.length > 0 && meaningful.every(l => MD_LIST_RE.test(l));
+
+  const next = lines.map(line => {
+    if (!line.trim()) return line;
+    const m = line.match(MD_LIST_RE);
+    if (allListed && m) return m[1] + m[5];
+    if (m) return line;                     // already a list of another kind
+    const indent = line.match(/^\s*/)[0];
+    return `${indent}- ${line.slice(indent.length)}`;
+  }).join("\n");
+
+  mdReplace(ta, from, to, next, from, from + next.length);
+}
+
+// Enter inside a list carries the list on; Enter on an empty item ends it.
+function mdContinueList(ta) {
+  const { selectionStart: s, value } = ta;
+  if (s !== ta.selectionEnd) return false;
+  const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+  const m = value.slice(lineStart, s).match(MD_LIST_RE);
+  if (!m) return false;
+
+  const [, indent, marker, checkbox, gap, content] = m;
+  if (!content.trim()) {
+    // An empty item means "I am done with this list".
+    mdReplace(ta, lineStart, s, "", lineStart);
+    return true;
+  }
+  const nextMarker = /^\d/.test(marker)
+    ? String(parseInt(marker, 10) + 1) + marker.slice(-1)
+    : marker;
+  // A ticked box does not carry its tick to the next line.
+  const nextBox = checkbox ? " [ ]" : "";
+  const insert = `\n${indent}${nextMarker}${nextBox}${gap}`;
+  mdReplace(ta, s, s, insert, s + insert.length);
+  return true;
+}
+
+function attachMarkdownShortcuts(textarea) {
+  textarea.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      if (mdContinueList(textarea)) e.preventDefault();
+      return;
+    }
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const key = e.key.toLowerCase();
+    if (key === "b")      { e.preventDefault(); mdToggleWrap(textarea, "**"); }
+    else if (key === "i") { e.preventDefault(); mdToggleWrap(textarea, "*"); }
+    // Markdown has no underline of its own; Obsidian uses the HTML tag, and
+    // so does the renderer here.
+    else if (key === "u") { e.preventDefault(); mdToggleWrap(textarea, "<u>", "</u>"); }
+    else if (key === "l") { e.preventDefault(); mdToggleList(textarea); }
+  });
+}
+
+// The markup for one editor. `id` names the textarea; the rest hangs off it.
+function markdownEditorHtml(id, value, { placeholder = "", compact = false } = {}) {
+  const cls = compact ? " compact" : "";
+  return `
+    <div class="md-editor${cls}" data-editor="${id}">
+      <div class="md-editor-bar">
+        <div class="md-seg">
+          <button type="button" class="md-seg-btn active" data-md-mode="write">Write</button>
+          <button type="button" class="md-seg-btn" data-md-mode="preview">Preview</button>
+        </div>
+      </div>
+      <textarea id="${id}" class="plain-field md-source${cls}"
+        placeholder="${escapeAttr(placeholder)}">${escapeHtml(value || "")}</textarea>
+      <div class="text-view md-rendered${cls} hidden"></div>
+    </div>`;
+}
+
+// Wires the switch, the shortcuts and paste handling. Preview is rendered on
+// the way in rather than on every keystroke — nobody reads it while typing.
+// After a submit the composer has to go back to a blank Write pane; leaving
+// it on a stale Preview looks like the text was not cleared.
+function resetMarkdownEditor(id) {
+  const ta = document.getElementById(id);
+  if (!ta) return;
+  const root = ta.closest(".md-editor");
+  root.querySelector(".md-rendered").innerHTML = "";
+  const write = root.querySelector('[data-md-mode="write"]');
+  if (write && !write.classList.contains("active")) write.click();
+}
+
+function wireMarkdownEditor(id, onChange) {
+  const ta = document.getElementById(id);
+  const root = ta.closest(".md-editor");
+  const rendered = root.querySelector(".md-rendered");
+
+  attachMarkdownShortcuts(ta);
+  attachMarkdownPaste(ta, onChange);
+  if (onChange) ta.addEventListener("input", onChange);
+
+  root.querySelectorAll("[data-md-mode]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const preview = btn.dataset.mdMode === "preview";
+      root.querySelectorAll("[data-md-mode]").forEach(b => b.classList.toggle("active", b === btn));
+      if (preview) rendered.innerHTML = renderMarkdown(ta.value);
+      ta.classList.toggle("hidden", preview);
+      rendered.classList.toggle("hidden", !preview);
+      if (!preview) ta.focus();
+    });
+  });
+  return ta;
+}
+
 function calBlockGeometry(start, end) {
   const gridStart = HOURS[0];
   const gridEnd = HOURS[HOURS.length - 1] + 1;
@@ -1474,7 +1635,7 @@ document.getElementById("idea-form").addEventListener("submit", async (e) => {
   const idea = await API.post("/api/ideas", { title, text, tags });
   state.ideas.push(idea);
   titleEl.value = ""; textEl.value = ""; tagsEl.value = "";
-  document.getElementById("idea-input-preview").innerHTML = "";
+  resetMarkdownEditor("idea-input");
   renderIdeas();
 });
 
@@ -1497,7 +1658,7 @@ function openIdeaModal(idea) {
           <button class="secondary-btn" id="idea-edit-btn">Edit</button>
         </div>
       </div>
-      <div class="text-view">${renderMarkdown(idea.text)}</div>
+      <div class="text-view md-body">${renderMarkdown(idea.text)}</div>
       <div class="card-tags" style="margin-top:16px;">${idea.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("") || '<span class="hint">no tags</span>'}</div>
       <div class="hint" style="margin-top:14px;">Linked ideas</div>
       <div class="card-tags" style="margin-top:4px;">${idea.links.map(lid => {
@@ -1526,16 +1687,7 @@ function openIdeaModal(idea) {
     openModal(`
       <div class="modal-header-row"><h3>Edit idea</h3></div>
       <input type="text" id="idea-edit-title" class="plain-field title-edit" value="${escapeAttr(idea.title || "")}" placeholder="Title (optional — auto-filled from the first line if left blank)" />
-      <div class="md-edit-split" style="margin-top:14px;">
-        <div class="md-edit-col">
-          <div class="md-col-label">Markdown</div>
-          <textarea id="idea-edit-text" class="plain-field body-edit md-source" rows="14">${escapeHtml(idea.text)}</textarea>
-        </div>
-        <div class="md-edit-col">
-          <div class="md-col-label">Preview</div>
-          <div id="idea-edit-preview" class="text-view md-preview"></div>
-        </div>
-      </div>
+      ${markdownEditorHtml("idea-edit-text", idea.text)}
       <label>Tags (comma separated)</label>
       <input type="text" id="idea-edit-tags" class="plain-field" value="${escapeAttr(idea.tags.join(", "))}" />
       <label style="margin-top:14px;">Linked ideas</label>
@@ -1555,12 +1707,7 @@ function openIdeaModal(idea) {
         <button class="primary-btn" id="idea-save">Save</button>
       </div>
     `, { large: true });
-    const ideaTextEl = document.getElementById("idea-edit-text");
-    const ideaPreviewEl = document.getElementById("idea-edit-preview");
-    const updateIdeaPreview = () => { ideaPreviewEl.innerHTML = renderMarkdown(ideaTextEl.value); };
-    updateIdeaPreview();
-    ideaTextEl.addEventListener("input", updateIdeaPreview);
-    attachMarkdownPaste(ideaTextEl, updateIdeaPreview);
+    wireMarkdownEditor("idea-edit-text");
     document.querySelectorAll("[data-unlink]").forEach(el => {
       el.addEventListener("click", () => { links = links.filter(l => l !== el.dataset.unlink); el.parentElement.remove(); });
     });
@@ -1812,27 +1959,14 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
     <label>Title</label><input type="text" id="nm-title" />
     <label>Synopsis (optional — auto-filled from body if left blank)</label><input type="text" id="nm-synopsis" />
     <label>Body</label>
-    <div class="md-edit-split">
-      <div class="md-edit-col">
-        <div class="md-col-label">Markdown</div>
-        <textarea id="nm-body" class="md-source body-edit compact" rows="8"></textarea>
-      </div>
-      <div class="md-edit-col">
-        <div class="md-col-label">Preview</div>
-        <div id="nm-body-preview" class="text-view md-preview compact"></div>
-      </div>
-    </div>
+    ${markdownEditorHtml("nm-body", "", { compact: true })}
     <div class="modal-actions">
       <div class="spacer"></div>
       <button class="secondary-btn" id="nm-cancel">Cancel</button>
       <button class="primary-btn" id="nm-save">Create</button>
     </div>
   `, { large: true });
-  const nmBodyEl = document.getElementById("nm-body");
-  const nmPreviewEl = document.getElementById("nm-body-preview");
-  const updateNmPreview = () => { nmPreviewEl.innerHTML = renderMarkdown(nmBodyEl.value); };
-  nmBodyEl.addEventListener("input", updateNmPreview);
-  attachMarkdownPaste(nmBodyEl, updateNmPreview);
+  wireMarkdownEditor("nm-body");
   document.getElementById("nm-cancel").onclick = closeModal;
   document.getElementById("nm-save").onclick = async () => {
     const title = document.getElementById("nm-title").value.trim() || "Untitled";
@@ -1859,7 +1993,7 @@ async function openMemoModal(id) {
         <button class="secondary-btn" id="mm-edit-btn">Edit</button>
       </div>
       ${memo.synopsis ? `<div class="hint" style="margin-bottom:14px;">${escapeHtml(memo.synopsis)}</div>` : ""}
-      <div class="text-view">${renderMarkdown(memo.body)}</div>
+      <div class="text-view md-body">${renderMarkdown(memo.body)}</div>
       <div class="hint" style="margin-top:16px;">Created ${fmtShort(new Date(memo.created))}</div>
       <div class="modal-actions">
         <button class="danger-btn" id="mm-delete">Delete</button>
@@ -1876,16 +2010,7 @@ async function openMemoModal(id) {
     openModal(`
       <input type="text" id="mm-title" class="plain-field title-edit" value="${escapeAttr(memo.title)}" placeholder="Title" />
       <input type="text" id="mm-synopsis" class="plain-field synopsis-edit" style="margin-top:6px;" value="${escapeAttr(memo.synopsis)}" placeholder="One-line synopsis" />
-      <div class="md-edit-split" style="margin-top:16px;">
-        <div class="md-edit-col">
-          <div class="md-col-label">Markdown</div>
-          <textarea id="mm-body" class="plain-field body-edit md-source" rows="16">${escapeHtml(memo.body)}</textarea>
-        </div>
-        <div class="md-edit-col">
-          <div class="md-col-label">Preview</div>
-          <div id="mm-body-preview" class="text-view md-preview"></div>
-        </div>
-      </div>
+      ${markdownEditorHtml("mm-body", memo.body)}
       <div class="modal-actions">
         <button class="danger-btn" id="mm-delete">Delete</button>
         <div class="spacer"></div>
@@ -1893,12 +2018,7 @@ async function openMemoModal(id) {
         <button class="primary-btn" id="mm-save">Save</button>
       </div>
     `, { large: true });
-    const mmBodyEl = document.getElementById("mm-body");
-    const mmPreviewEl = document.getElementById("mm-body-preview");
-    const updateMmPreview = () => { mmPreviewEl.innerHTML = renderMarkdown(mmBodyEl.value); };
-    updateMmPreview();
-    mmBodyEl.addEventListener("input", updateMmPreview);
-    attachMarkdownPaste(mmBodyEl, updateMmPreview);
+    wireMarkdownEditor("mm-body");
     document.getElementById("mm-cancel").onclick = () => { editing = false; renderView(); };
     document.getElementById("mm-save").onclick = async () => {
       const title = document.getElementById("mm-title").value.trim() || "Untitled";
@@ -2787,7 +2907,12 @@ function renderRecapSections() {
     </div>`;
 
   if (editing) {
-    el.querySelectorAll(".recap-text").forEach(t => attachMarkdownPaste(t));
+    // The recap is markdown too, so the same shortcuts work here. No
+    // Write/Preview switch: these are three short columns, not a document.
+    el.querySelectorAll(".recap-text").forEach(t => {
+      attachMarkdownPaste(t);
+      attachMarkdownShortcuts(t);
+    });
     el.querySelectorAll(".linked-add").forEach(b => {
       // Hold the in-progress prose so opening the picker doesn't lose it.
       b.addEventListener("click", () => {
@@ -2919,13 +3044,7 @@ async function refreshSyncInBackground() {
   await loadExternalEvents();
 }
 
-{
-  const ideaInputEl = document.getElementById("idea-input");
-  const ideaInputPreviewEl = document.getElementById("idea-input-preview");
-  const updateIdeaInputPreview = () => { ideaInputPreviewEl.innerHTML = renderMarkdown(ideaInputEl.value); };
-  ideaInputEl.addEventListener("input", updateIdeaInputPreview);
-  attachMarkdownPaste(ideaInputEl, updateIdeaInputPreview);
-}
+wireMarkdownEditor("idea-input");
 
 // ---------------------------------------------------------------- liveness
 // In a browser you reload to catch up; in the app there is no reflex for

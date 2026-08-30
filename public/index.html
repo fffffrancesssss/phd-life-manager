@@ -58,15 +58,15 @@
         </div>
         <form id="idea-form" class="idea-add-form">
           <input type="text" id="idea-title-input" placeholder="Title (optional — auto-filled from the first line if left blank)" />
-          <div class="md-edit-split">
-            <div class="md-edit-col">
-              <div class="md-col-label">Markdown</div>
-              <textarea id="idea-input" class="md-source body-edit compact" placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…" rows="4" required></textarea>
+          <div class="md-editor compact" data-editor="idea-input">
+            <div class="md-editor-bar">
+              <div class="md-seg">
+                <button type="button" class="md-seg-btn active" data-md-mode="write">Write</button>
+                <button type="button" class="md-seg-btn" data-md-mode="preview">Preview</button>
+              </div>
             </div>
-            <div class="md-edit-col">
-              <div class="md-col-label">Preview</div>
-              <div id="idea-input-preview" class="text-view md-preview compact"></div>
-            </div>
+            <textarea id="idea-input" class="plain-field md-source compact" placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…" required></textarea>
+            <div class="text-view md-rendered compact hidden"></div>
           </div>
           <div class="idea-add-row">
             <input type="text" id="idea-tags-input" placeholder="tags, comma, separated" />
