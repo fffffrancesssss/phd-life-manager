@@ -58,16 +58,12 @@
         </div>
         <form id="idea-form" class="idea-add-form">
           <input type="text" id="idea-title-input" placeholder="Title (optional — auto-filled from the first line if left blank)" />
-          <div class="md-editor compact" data-editor="idea-input">
-            <div class="md-editor-bar">
-              <div class="md-seg">
-                <button type="button" class="md-seg-btn active" data-md-mode="write">Write</button>
-                <button type="button" class="md-seg-btn" data-md-mode="preview">Preview</button>
-              </div>
-            </div>
-            <textarea id="idea-input" class="plain-field md-source compact" placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…" required></textarea>
-            <div class="text-view md-rendered compact hidden"></div>
-          </div>
+          <!-- A contenteditable, not a textarea: the markdown is styled as it
+               is typed. `required` cannot apply here, so the submit handler
+               checks for empty text itself. -->
+          <div id="idea-input" class="md-live compact is-empty" contenteditable="true"
+               spellcheck="true"
+               data-placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…"><div class="md-ln"><br></div></div>
           <div class="idea-add-row">
             <input type="text" id="idea-tags-input" placeholder="tags, comma, separated" />
             <button type="submit" class="primary-btn">Add idea</button>

@@ -177,18 +177,30 @@ that link would orphan the event on the far side.
   pull from iCloud still lists it, and it was only hidden because a local record
   claimed its uid — remove the record alone and the block reappears in another
   colour, which reads as the delete having failed.
-- **Markdown is edited on one surface, not two.** Memos and ideas used to show
-  a source pane beside a preview pane; that halved the space to write in and
-  made the dialog resize between reading and editing. There is now a single
-  full-width editor with a Write/Preview switch (`markdownEditorHtml()` /
-  `wireMarkdownEditor()`), and `--md-body-h` keeps Write, Preview and the
-  read-only `.md-body` the same height so nothing under them moves.
+- **Markdown renders live, in the editing surface** (`attachLiveMarkdown()`).
+  Memos, ideas and the recap columns are `contenteditable`, not `<textarea>` —
+  a textarea cannot show styled text. **The element's text content is always
+  exactly the markdown source**: nothing is parsed away, `**` merely gets
+  dimmed (`.md-mark`), so what is saved is what was typed. `mdReadValue()` is
+  the only way to read a field; there is no `.value`.
+- **Three things the live editor has to respect**, each of which breaks it
+  outright if removed:
+  - **Repainting is skipped between `compositionstart` and `compositionend`.**
+    Rebuilding the DOM mid-composition tears out the IME's preedit, and Chinese
+    becomes impossible to type.
+  - **It keeps its own undo stack.** Rewriting `innerHTML` throws away the
+    browser's, so ⌘Z / ⇧⌘Z are handled here, coalescing runs of typing.
+  - **The caret is tracked as a character offset into the source**, not as a
+    DOM position, because the DOM is rebuilt underneath it.
+- **`mdReadValue()` collects lines and joins them.** Appending a separator
+  "if one is needed" silently swallows blank lines, because an empty line
+  contributes no characters — that bug ate the blank line between every
+  paragraph. A `<br>` inside a line is a soft break; a *trailing* `<br>` is the
+  browser's placeholder for an empty block and is not text.
 - **⌘B / ⌘I / ⌘U / ⌘L work in every markdown field**, and lists carry on by
-  themselves on Enter, ending when you press it on an empty item. All of it is
-  in `attachMarkdownShortcuts()`. Edits go through `setRangeText`, not by
-  reassigning `.value` — the latter throws away the browser's undo stack.
-  Markdown has no underline, so ⌘U writes `<u>…</u>`, which is what Obsidian
-  does and what the renderer already passes through.
+  themselves on Enter, ending when you press it on an empty item. Markdown has
+  no underline, so ⌘U writes `<u>…</u>` — what Bear and Obsidian do, and what
+  the renderer already passes through.
 - **The page keeps itself current** (see the liveness section of `app.js`):
   now-line every 30s, data on refocus, background pull every 5min. Refreshes
   are skipped while a dialog is open or a block is being dragged.

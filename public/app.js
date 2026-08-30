@@ -94,193 +94,386 @@ function htmlClipboardToMarkdown(html) {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function insertAtCursor(textarea, text) {
-  const start = textarea.selectionStart, end = textarea.selectionEnd;
-  const val = textarea.value;
-  textarea.value = val.slice(0, start) + text + val.slice(end);
-  const pos = start + text.length;
-  textarea.selectionStart = textarea.selectionEnd = pos;
+// ---------------------------------------------------------------- markdown editor
+
+// A list item: indent, marker, optional checkbox, gap, content. Used both to
+// paint a line and to carry a list on when Enter is pressed.
+const MD_LIST_RE = /^(\s*)([-*+]|\d+[.)])(\s+\[[ xX]\])?(\s+)(.*)$/;
+
+// ---------------------------------------------------------------- live markdown
+//
+// Bold looks bold while you type it, the way Bear does — no Write/Preview
+// switch, no second pane. A <textarea> cannot show styled text, so the
+// surface is a contenteditable whose *text content is always exactly the
+// markdown source*. Nothing is parsed away: `**` stays in the text and is
+// merely dimmed, so what gets saved is what was typed.
+//
+// The loop is: let the browser handle the editing natively, then read the
+// text back out, re-render it as styled lines, and put the caret back where
+// it was. Three things that has to respect, all of them learned the hard way:
+//
+//   · Re-rendering mid-composition destroys IME input, so it is skipped
+//     between compositionstart and compositionend — without this you cannot
+//     type Chinese at all.
+//   · Rewriting innerHTML throws away the browser's undo stack, so this
+//     keeps its own (`history`) and handles ⌘Z / ⇧⌘Z.
+//   · The caret has to be tracked as a character offset into the source, not
+//     as a DOM position, because the DOM is rebuilt underneath it.
+
+const MD_INLINE_RE = new RegExp([
+  "(`[^`\\n]+`)",                       // code
+  "(\\*\\*[^*\\n]+\\*\\*)",             // bold
+  "(~~[^~\\n]+~~)",                     // strike
+  "(<u>[\\s\\S]*?<\\/u>)",              // underline (markdown has none of its own)
+  "(\\*[^*\\n]+\\*)",                   // italic
+  "(_[^_\\n]+_)",                       // italic, the other spelling
+  "(\\[[^\\]\\n]*\\]\\([^)\\n]*\\))",   // link
+].join("|"), "g");
+
+function mdMark(text) { return `<span class="md-mark">${escapeHtml(text)}</span>`; }
+
+function mdInline(text) {
+  let out = "", last = 0;
+  text.replace(MD_INLINE_RE, (match, code, bold, strike, uline, ital, ital2, link, index) => {
+    out += escapeHtml(text.slice(last, index));
+    last = index + match.length;
+    if (code)        out += `<span class="md-code">${mdMark("`")}${escapeHtml(match.slice(1, -1))}${mdMark("`")}</span>`;
+    else if (bold)   out += `<span class="md-strong">${mdMark("**")}${escapeHtml(match.slice(2, -2))}${mdMark("**")}</span>`;
+    else if (strike) out += `<span class="md-strike">${mdMark("~~")}${escapeHtml(match.slice(2, -2))}${mdMark("~~")}</span>`;
+    else if (uline)  out += `<span class="md-underline">${mdMark("<u>")}${escapeHtml(match.slice(3, -4))}${mdMark("</u>")}</span>`;
+    else if (ital)   out += `<span class="md-em">${mdMark("*")}${escapeHtml(match.slice(1, -1))}${mdMark("*")}</span>`;
+    else if (ital2)  out += `<span class="md-em">${mdMark("_")}${escapeHtml(match.slice(1, -1))}${mdMark("_")}</span>`;
+    else if (link) {
+      const split = match.indexOf("](");
+      out += `<span class="md-link">${mdMark("[")}${escapeHtml(match.slice(1, split))}${mdMark("]")}`
+           + `<span class="md-url">${mdMark("(")}${escapeHtml(match.slice(split + 2, -1))}${mdMark(")")}</span></span>`;
+    }
+    return match;
+  });
+  return out + escapeHtml(text.slice(last));
 }
 
-function attachMarkdownPaste(textarea, onChange) {
-  textarea.addEventListener("paste", (e) => {
-    const html = e.clipboardData && e.clipboardData.getData("text/html");
-    if (!html) return; // plain-text paste: let the browser handle it normally
-    e.preventDefault();
-    const md = htmlClipboardToMarkdown(html);
-    insertAtCursor(textarea, md || (e.clipboardData.getData("text/plain") || ""));
-    if (onChange) onChange();
+function mdLineHtml(line) {
+  if (!line) return "<br>";
+  const heading = line.match(/^(#{1,6})(\s+)(.*)$/);
+  if (heading) {
+    return `<span class="md-h md-h${heading[1].length}">`
+         + mdMark(heading[1] + heading[2]) + mdInline(heading[3]) + "</span>";
+  }
+  const quote = line.match(/^(\s*>\s?)(.*)$/);
+  if (quote) return `<span class="md-quote">${mdMark(quote[1])}${mdInline(quote[2])}</span>`;
+
+  const list = line.match(MD_LIST_RE);
+  if (list) {
+    const [, indent, marker, checkbox, gap, content] = list;
+    const done = checkbox && /[xX]/.test(checkbox);
+    return escapeHtml(indent) + mdMark(marker + (checkbox || "") + gap)
+         + `<span class="md-item${done ? " done" : ""}">${mdInline(content)}</span>`;
+  }
+  return mdInline(line);
+}
+
+// The DOM is rebuilt constantly, so the source of truth is read back out of
+// it. Each top-level child is one line — collected and joined, rather than
+// appended with a separator "if we need one", because an empty line
+// contributes no characters and would otherwise be swallowed along with the
+// blank line it represents.
+//
+// A <br> inside a line is a soft break, except a trailing one: that is the
+// placeholder a browser puts in a block that would otherwise be empty, and it
+// is not part of the text.
+function mdReadValue(root) {
+  const readLine = (node) => {
+    let out = "";
+    const walk = (n) => {
+      for (const child of n.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) { out += child.data; continue; }
+        if (child.nodeName === "BR") {
+          if (child.nextSibling) out += "\n";
+          continue;
+        }
+        // A nested block can appear for a moment after a native edit, before
+        // the repaint flattens it back into lines.
+        if ((child.nodeName === "DIV" || child.nodeName === "P") && out && !out.endsWith("\n")) {
+          out += "\n";
+        }
+        walk(child);
+      }
+    };
+    walk(node);
+    return out;
+  };
+
+  const lines = [];
+  for (const node of root.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) { lines.push(node.data); continue; }
+    if (node.nodeName === "BR") { lines.push(""); continue; }
+    lines.push(readLine(node));
+  }
+  return lines.join("\n");
+}
+
+// Caret as a character offset into that source.
+function mdCaretOffset(root) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !root.contains(sel.anchorNode)) return null;
+  const range = sel.getRangeAt(0).cloneRange();
+  range.selectNodeContents(root);
+  range.setEnd(sel.focusNode, sel.focusOffset);
+  const frag = range.cloneContents();
+  const holder = document.createElement("div");
+  holder.appendChild(frag);
+  return mdReadValue(holder).length;
+}
+
+function mdSetCaret(root, offset) {
+  if (offset == null) return;
+  let remaining = offset;
+  const lines = Array.from(root.children);
+  for (const line of lines) {
+    const text = line.textContent;
+    if (remaining <= text.length) {
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        if (remaining <= node.data.length) {
+          const range = document.createRange();
+          range.setStart(node, remaining);
+          range.collapse(true);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          return;
+        }
+        remaining -= node.data.length;
+        node = walker.nextNode();
+      }
+      // An empty line has no text node to land in.
+      const range = document.createRange();
+      range.setStart(line, 0);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return;
+    }
+    remaining -= text.length + 1;      // + the newline this line ends with
+  }
+  // Past the end: put it at the very end.
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function mdPaint(root, value) {
+  root.innerHTML = value.split("\n")
+    .map(line => `<div class="md-ln">${mdLineHtml(line)}</div>`).join("");
+  root.classList.toggle("is-empty", value === "");
+}
+
+// One live editor. Returns a handle the dialogs use to read and set the text.
+function attachLiveMarkdown(root, { onChange } = {}) {
+  let composing = false;
+  const history = [{ value: root.dataset.initial || "", caret: 0 }];
+  let historyAt = 0;
+  let lastPush = 0;
+
+  const value = () => mdReadValue(root);
+
+  const repaint = (next, caret) => {
+    mdPaint(root, next);
+    mdSetCaret(root, caret);
+    if (onChange) onChange(next);
+  };
+
+  const push = (next, caret, force) => {
+    const now = Date.now();
+    const top = history[historyAt];
+    if (top && top.value === next) return;
+    // Typing coalesces into one undo step; a deliberate action gets its own.
+    if (!force && now - lastPush < 600 && historyAt === history.length - 1) {
+      history[historyAt] = { value: next, caret };
+    } else {
+      history.length = historyAt + 1;
+      history.push({ value: next, caret });
+      historyAt = history.length - 1;
+    }
+    lastPush = now;
+  };
+
+  // Applies an edit expressed on the source text, then repaints.
+  const edit = (fn) => {
+    const before = value();
+    const sel = window.getSelection();
+    let start = mdCaretOffset(root) ?? before.length;
+    let end = start;
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      const r = sel.getRangeAt(0);
+      const probe = document.createRange();
+      probe.selectNodeContents(root);
+      probe.setEnd(r.startContainer, r.startOffset);
+      const holder = document.createElement("div");
+      holder.appendChild(probe.cloneContents());
+      start = mdReadValue(holder).length;
+      end = start + r.toString().length;
+    }
+    const result = fn(before, start, end);
+    if (!result) return false;
+    push(result.value, result.caret, true);
+    repaint(result.value, result.caret);
+    return true;
+  };
+
+  root.addEventListener("compositionstart", () => { composing = true; });
+  root.addEventListener("compositionend", () => {
+    composing = false;
+    const next = value();
+    const caret = mdCaretOffset(root);
+    push(next, caret);
+    repaint(next, caret);
   });
+
+  root.addEventListener("input", () => {
+    // Repainting mid-composition tears the IME's own preedit out of the DOM,
+    // which makes it impossible to type in any language that uses one.
+    if (composing) return;
+    const next = value();
+    const caret = mdCaretOffset(root);
+    push(next, caret);
+    repaint(next, caret);
+  });
+
+  // Plain text only: pasted HTML would put tags in the source.
+  root.addEventListener("paste", (e) => {
+    e.preventDefault();
+    const html = e.clipboardData.getData("text/html");
+    const text = html ? htmlClipboardToMarkdown(html) : e.clipboardData.getData("text/plain");
+    edit((v, s, en) => {
+      const next = v.slice(0, s) + text + v.slice(en);
+      return { value: next, caret: s + text.length };
+    });
+  });
+
+  root.addEventListener("keydown", (e) => {
+    if (composing) return;
+
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      const to = e.shiftKey ? historyAt + 1 : historyAt - 1;
+      if (to < 0 || to >= history.length) return;
+      historyAt = to;
+      repaint(history[to].value, history[to].caret);
+      return;
+    }
+
+    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      const handled = edit((v, s, en) => {
+        const lineStart = v.lastIndexOf("\n", s - 1) + 1;
+        const m = v.slice(lineStart, s).match(MD_LIST_RE);
+        if (!m) return null;                       // let the browser insert it
+        const [, indent, marker, checkbox, gap, content] = m;
+        if (!content.trim()) {
+          const next = v.slice(0, lineStart) + v.slice(en);
+          return { value: next, caret: lineStart };
+        }
+        const nextMarker = /^\d/.test(marker)
+          ? String(parseInt(marker, 10) + 1) + marker.slice(-1) : marker;
+        const insert = `\n${indent}${nextMarker}${checkbox ? " [ ]" : ""}${gap}`;
+        return { value: v.slice(0, s) + insert + v.slice(en), caret: s + insert.length };
+      });
+      if (handled) { e.preventDefault(); return; }
+      // A plain newline, done on the model so the repaint stays in step.
+      e.preventDefault();
+      edit((v, s, en) => ({ value: v.slice(0, s) + "\n" + v.slice(en), caret: s + 1 }));
+      return;
+    }
+
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const key = e.key.toLowerCase();
+    const wrap = (open, close = open) => {
+      e.preventDefault();
+      edit((v, s, en) => {
+        const sel = v.slice(s, en);
+        const before = v.slice(0, s), after = v.slice(en);
+        if (before.endsWith(open) && after.startsWith(close)) {
+          return { value: before.slice(0, -open.length) + sel + after.slice(close.length),
+                   caret: en - open.length };
+        }
+        if (sel.length >= open.length + close.length && sel.startsWith(open) && sel.endsWith(close)) {
+          const inner = sel.slice(open.length, sel.length - close.length);
+          return { value: before + inner + after, caret: s + inner.length };
+        }
+        return { value: before + open + sel + close + after,
+                 caret: s + open.length + sel.length };
+      });
+    };
+    if (key === "b") wrap("**");
+    else if (key === "i") wrap("*");
+    else if (key === "u") wrap("<u>", "</u>");
+    else if (key === "l") {
+      e.preventDefault();
+      edit((v, s, en) => {
+        const from = v.lastIndexOf("\n", s - 1) + 1;
+        let to = v.indexOf("\n", en);
+        if (to === -1) to = v.length;
+        const lines = v.slice(from, to).split("\n");
+        const meaningful = lines.filter(l => l.trim());
+        const listed = meaningful.length > 0 && meaningful.every(l => MD_LIST_RE.test(l));
+        const next = lines.map(line => {
+          if (!line.trim()) return line;
+          const m = line.match(MD_LIST_RE);
+          if (listed && m) return m[1] + m[5];
+          if (m) return line;
+          const indent = line.match(/^\s*/)[0];
+          return `${indent}- ${line.slice(indent.length)}`;
+        }).join("\n");
+        return { value: v.slice(0, from) + next + v.slice(to), caret: from + next.length };
+      });
+    }
+  });
+
+  return {
+    get value() { return value(); },
+    set value(v) { push(v, v.length, true); repaint(v, v.length); },
+    focus() { root.focus(); },
+  };
+}
+
+// The markup for one editor, and the wiring for it. `id` names the surface.
+function markdownEditorHtml(id, value, { placeholder = "", compact = false } = {}) {
+  const cls = compact ? " compact" : "";
+  return `<div id="${id}" class="md-live${cls}" contenteditable="true" spellcheck="true"
+    data-placeholder="${escapeAttr(placeholder)}">${
+      (value || "").split("\n").map(l => `<div class="md-ln">${mdLineHtml(l)}</div>`).join("")
+    }</div>`;
+}
+
+const mdEditors = new Map();
+
+function wireMarkdownEditor(id, onChange) {
+  const root = document.getElementById(id);
+  const handle = attachLiveMarkdown(root, { onChange });
+  root.classList.toggle("is-empty", mdReadValue(root) === "");
+  mdEditors.set(id, handle);
+  return handle;
+}
+
+// What the dialogs call instead of reading .value off a textarea.
+function markdownValue(id) {
+  const handle = mdEditors.get(id);
+  return handle ? handle.value : "";
+}
+
+function resetMarkdownEditor(id) {
+  const handle = mdEditors.get(id);
+  if (handle) handle.value = "";
 }
 
 const HOURS = Array.from({ length: 17 }, (_, i) => i + 7); // 7am .. 11pm
 const CAL_HOUR_PX = 40;
-
-// Places a block in a day column, clamped to the hours the grid actually
-// shows. Without this, anything starting before the first hour gets a
-// negative offset (drawing over the headers) and anything running long —
-// an overnight session someone forgot to stop, an all-day Apple event —
-// overflows the grid and pushes the page around.
-// ---------------------------------------------------------------- markdown editor
-//
-// One writing surface, the width of the dialog, with a Write/Preview switch —
-// rather than a source pane and a preview pane splitting the space in half.
-// Splitting it meant neither side was big enough to write in, and the dialog
-// changed size between reading and editing.
-//
-// The shortcuts are the ones every editor has, because markdown syntax is
-// something you should be able to not think about: ⌘B, ⌘I, ⌘U, ⌘L. Lists
-// carry on by themselves on Enter and end when you press it on an empty item.
-
-const MD_LIST_RE = /^(\s*)([-*+]|\d+[.)])(\s+\[[ xX]\])?(\s+)(.*)$/;
-
-function mdLineBounds(value, from, to) {
-  const start = value.lastIndexOf("\n", from - 1) + 1;
-  let end = value.indexOf("\n", to);
-  if (end === -1) end = value.length;
-  return [start, end];
-}
-
-function mdReplace(ta, start, end, text, selStart, selEnd) {
-  // setRangeText keeps the browser's own undo stack intact, which manually
-  // reassigning .value throws away.
-  ta.setRangeText(text, start, end, "preserve");
-  ta.selectionStart = selStart;
-  ta.selectionEnd = selEnd === undefined ? selStart : selEnd;
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-// ⌘B / ⌘I: wrap the selection, or unwrap it if it is already wrapped, so the
-// same keystroke turns the style off again.
-function mdToggleWrap(ta, open, close = open) {
-  const { selectionStart: s, selectionEnd: e, value } = ta;
-  const sel = value.slice(s, e);
-  const before = value.slice(0, s), after = value.slice(e);
-
-  if (before.endsWith(open) && after.startsWith(close)) {
-    mdReplace(ta, s - open.length, e + close.length, sel, s - open.length, e - open.length);
-    return;
-  }
-  if (sel.length >= open.length + close.length && sel.startsWith(open) && sel.endsWith(close)) {
-    const inner = sel.slice(open.length, sel.length - close.length);
-    mdReplace(ta, s, e, inner, s, s + inner.length);
-    return;
-  }
-  mdReplace(ta, s, e, open + sel + close, s + open.length, s + open.length + sel.length);
-}
-
-// ⌘L: turn the touched lines into a list, or back into plain lines.
-function mdToggleList(ta) {
-  const { selectionStart: s, selectionEnd: e, value } = ta;
-  const [from, to] = mdLineBounds(value, s, e);
-  const lines = value.slice(from, to).split("\n");
-  const meaningful = lines.filter(l => l.trim());
-  const allListed = meaningful.length > 0 && meaningful.every(l => MD_LIST_RE.test(l));
-
-  const next = lines.map(line => {
-    if (!line.trim()) return line;
-    const m = line.match(MD_LIST_RE);
-    if (allListed && m) return m[1] + m[5];
-    if (m) return line;                     // already a list of another kind
-    const indent = line.match(/^\s*/)[0];
-    return `${indent}- ${line.slice(indent.length)}`;
-  }).join("\n");
-
-  mdReplace(ta, from, to, next, from, from + next.length);
-}
-
-// Enter inside a list carries the list on; Enter on an empty item ends it.
-function mdContinueList(ta) {
-  const { selectionStart: s, value } = ta;
-  if (s !== ta.selectionEnd) return false;
-  const lineStart = value.lastIndexOf("\n", s - 1) + 1;
-  const m = value.slice(lineStart, s).match(MD_LIST_RE);
-  if (!m) return false;
-
-  const [, indent, marker, checkbox, gap, content] = m;
-  if (!content.trim()) {
-    // An empty item means "I am done with this list".
-    mdReplace(ta, lineStart, s, "", lineStart);
-    return true;
-  }
-  const nextMarker = /^\d/.test(marker)
-    ? String(parseInt(marker, 10) + 1) + marker.slice(-1)
-    : marker;
-  // A ticked box does not carry its tick to the next line.
-  const nextBox = checkbox ? " [ ]" : "";
-  const insert = `\n${indent}${nextMarker}${nextBox}${gap}`;
-  mdReplace(ta, s, s, insert, s + insert.length);
-  return true;
-}
-
-function attachMarkdownShortcuts(textarea) {
-  textarea.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-      if (mdContinueList(textarea)) e.preventDefault();
-      return;
-    }
-    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
-    const key = e.key.toLowerCase();
-    if (key === "b")      { e.preventDefault(); mdToggleWrap(textarea, "**"); }
-    else if (key === "i") { e.preventDefault(); mdToggleWrap(textarea, "*"); }
-    // Markdown has no underline of its own; Obsidian uses the HTML tag, and
-    // so does the renderer here.
-    else if (key === "u") { e.preventDefault(); mdToggleWrap(textarea, "<u>", "</u>"); }
-    else if (key === "l") { e.preventDefault(); mdToggleList(textarea); }
-  });
-}
-
-// The markup for one editor. `id` names the textarea; the rest hangs off it.
-function markdownEditorHtml(id, value, { placeholder = "", compact = false } = {}) {
-  const cls = compact ? " compact" : "";
-  return `
-    <div class="md-editor${cls}" data-editor="${id}">
-      <div class="md-editor-bar">
-        <div class="md-seg">
-          <button type="button" class="md-seg-btn active" data-md-mode="write">Write</button>
-          <button type="button" class="md-seg-btn" data-md-mode="preview">Preview</button>
-        </div>
-      </div>
-      <textarea id="${id}" class="plain-field md-source${cls}"
-        placeholder="${escapeAttr(placeholder)}">${escapeHtml(value || "")}</textarea>
-      <div class="text-view md-rendered${cls} hidden"></div>
-    </div>`;
-}
-
-// Wires the switch, the shortcuts and paste handling. Preview is rendered on
-// the way in rather than on every keystroke — nobody reads it while typing.
-// After a submit the composer has to go back to a blank Write pane; leaving
-// it on a stale Preview looks like the text was not cleared.
-function resetMarkdownEditor(id) {
-  const ta = document.getElementById(id);
-  if (!ta) return;
-  const root = ta.closest(".md-editor");
-  root.querySelector(".md-rendered").innerHTML = "";
-  const write = root.querySelector('[data-md-mode="write"]');
-  if (write && !write.classList.contains("active")) write.click();
-}
-
-function wireMarkdownEditor(id, onChange) {
-  const ta = document.getElementById(id);
-  const root = ta.closest(".md-editor");
-  const rendered = root.querySelector(".md-rendered");
-
-  attachMarkdownShortcuts(ta);
-  attachMarkdownPaste(ta, onChange);
-  if (onChange) ta.addEventListener("input", onChange);
-
-  root.querySelectorAll("[data-md-mode]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const preview = btn.dataset.mdMode === "preview";
-      root.querySelectorAll("[data-md-mode]").forEach(b => b.classList.toggle("active", b === btn));
-      if (preview) rendered.innerHTML = renderMarkdown(ta.value);
-      ta.classList.toggle("hidden", preview);
-      rendered.classList.toggle("hidden", !preview);
-      if (!preview) ta.focus();
-    });
-  });
-  return ta;
-}
 
 function calBlockGeometry(start, end) {
   const gridStart = HOURS[0];
@@ -1626,15 +1819,14 @@ function renderIdeas() {
 document.getElementById("idea-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const titleEl = document.getElementById("idea-title-input");
-  const textEl = document.getElementById("idea-input");
   const tagsEl = document.getElementById("idea-tags-input");
-  const text = textEl.value.trim();
+  const text = markdownValue("idea-input").trim();
   if (!text) return;
   const title = titleEl.value.trim();
   const tags = tagsEl.value.split(",").map(s => s.trim()).filter(Boolean);
   const idea = await API.post("/api/ideas", { title, text, tags });
   state.ideas.push(idea);
-  titleEl.value = ""; textEl.value = ""; tagsEl.value = "";
+  titleEl.value = ""; tagsEl.value = "";
   resetMarkdownEditor("idea-input");
   renderIdeas();
 });
@@ -1719,7 +1911,7 @@ function openIdeaModal(idea) {
     document.getElementById("idea-cancel").onclick = () => { links = idea.links.slice(); editing = false; renderView(); };
     document.getElementById("idea-save").onclick = async () => {
       const title = document.getElementById("idea-edit-title").value.trim();
-      const text = document.getElementById("idea-edit-text").value.trim();
+      const text = markdownValue("idea-edit-text").trim();
       const tags = document.getElementById("idea-edit-tags").value.split(",").map(s => s.trim()).filter(Boolean);
       const updated = await API.put(`/api/ideas/${idea.id}`, { title, text, tags, links });
       Object.assign(idea, updated);
@@ -1971,7 +2163,7 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
   document.getElementById("nm-save").onclick = async () => {
     const title = document.getElementById("nm-title").value.trim() || "Untitled";
     const synopsis = document.getElementById("nm-synopsis").value.trim();
-    const body = document.getElementById("nm-body").value;
+    const body = markdownValue("nm-body");
     const memo = await API.post(`/api/projects/${state.currentProject.slug}/memos`, { title, synopsis, body });
     state.currentProject.memos.push(memo);
     const idx = state.projects.findIndex(x => x.slug === state.currentProject.slug);
@@ -2023,7 +2215,7 @@ async function openMemoModal(id) {
     document.getElementById("mm-save").onclick = async () => {
       const title = document.getElementById("mm-title").value.trim() || "Untitled";
       const synopsis = document.getElementById("mm-synopsis").value.trim();
-      const body = document.getElementById("mm-body").value;
+      const body = markdownValue("mm-body");
       const updated = await API.put(`/api/projects/${projectSlug}/memos/${id}`, { title, synopsis, body });
       memo = updated;
       const idx = state.currentProject.memos.findIndex(m => m.id === id);
@@ -2896,7 +3088,8 @@ function renderRecapSections() {
         <div class="recap-col">
           <div class="recap-col-label">${escapeHtml(s.label)}</div>
           ${editing
-            ? `<textarea class="plain-field recap-text" data-section="${s.key}" placeholder="${escapeAttr(s.placeholder)}">${escapeHtml(entry[s.key])}</textarea>`
+            ? markdownEditorHtml(`recap-text-${s.key}`, entry[s.key],
+                                 { placeholder: s.placeholder, compact: true })
             : (entry[s.key].trim()
                 ? `<div class="text-view">${renderMarkdown(entry[s.key])}</div>`
                 : `<div class="empty-state">${escapeHtml(s.placeholder)}</div>`)}
@@ -2907,16 +3100,11 @@ function renderRecapSections() {
     </div>`;
 
   if (editing) {
-    // The recap is markdown too, so the same shortcuts work here. No
-    // Write/Preview switch: these are three short columns, not a document.
-    el.querySelectorAll(".recap-text").forEach(t => {
-      attachMarkdownPaste(t);
-      attachMarkdownShortcuts(t);
-    });
+    RECAP_SECTIONS.forEach(s => wireMarkdownEditor(`recap-text-${s.key}`));
     el.querySelectorAll(".linked-add").forEach(b => {
       // Hold the in-progress prose so opening the picker doesn't lose it.
       b.addEventListener("click", () => {
-        el.querySelectorAll(".recap-text").forEach(t => { entry[t.dataset.section] = t.value; });
+        RECAP_SECTIONS.forEach(s => { entry[s.key] = markdownValue(`recap-text-${s.key}`); });
         openRecapLinkPicker(b.dataset.link);
       });
     });
@@ -2935,7 +3123,7 @@ function renderRecapSections() {
 
 async function saveRecap() {
   const entry = state.recap.entry;
-  document.querySelectorAll(".recap-text").forEach(t => { entry[t.dataset.section] = t.value; });
+  RECAP_SECTIONS.forEach(s => { entry[s.key] = markdownValue(`recap-text-${s.key}`); });
   const saved = await API.put(`/api/journal/recap?key=${state.recap.selectedKey}`, {
     study: entry.study, life: entry.life, summary: entry.summary,
     dials: entry.dials, mood: entry.mood,
