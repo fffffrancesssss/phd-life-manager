@@ -39,58 +39,82 @@ function renderMarkdown(src) {
   return window.marked ? marked.parse(src) : `<p>${escapeHtml(src)}</p>`;
 }
 
-// Converts pasted rich HTML (e.g. from Word) into markdown, keeping only
-// heading levels and list structure — everything else becomes plain text.
+// Pasted rich text, turned into markdown.
+//
+// The first version walked only block elements, so a fragment copied from
+// *inside* a paragraph — a bare <span>, a <b>, a table cell, the wrapper Word
+// puts around a selection — produced an empty string, which then got pasted
+// over perfectly good plain text. That was the "sometimes I can't paste".
+// Text is now accumulated wherever it is found, and inline elements are
+// carried along rather than walked past.
+const HTML_BLOCK_TAGS = new Set([
+  "P", "DIV", "SECTION", "ARTICLE", "MAIN", "ASIDE", "HEADER", "FOOTER",
+  "BLOCKQUOTE", "PRE", "TR", "TD", "TH", "DT", "DD", "FIGCAPTION", "ADDRESS",
+]);
+
 function htmlClipboardToMarkdown(html) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const lines = [];
+  let run = "";
 
-  function directText(el) {
-    let text = "";
-    el.childNodes.forEach(n => {
-      if (n.nodeType === Node.TEXT_NODE) text += n.textContent;
-      else if (n.nodeType === Node.ELEMENT_NODE && n.tagName !== "UL" && n.tagName !== "OL") text += n.textContent;
-    });
-    return text.replace(/\s+/g, " ").trim();
-  }
+  const flush = () => {
+    const text = run.replace(/[ \t\u00a0]+/g, " ").trim();
+    if (text) lines.push(text);
+    run = "";
+  };
+  const oneLine = (el) => el.textContent.replace(/\s+/g, " ").trim();
 
   function walkList(listEl, ordered, depth) {
-    let i = 1;
-    Array.from(listEl.children).forEach(li => {
-      if (li.tagName !== "LI") return;
-      const indent = "  ".repeat(depth);
-      const text = directText(li);
-      if (text) lines.push(`${indent}${ordered ? i + ". " : "- "}${text}`);
-      i++;
-      Array.from(li.children).forEach(child => {
+    flush();
+    let n = 1;
+    for (const li of listEl.children) {
+      if (li.tagName !== "LI") continue;
+      // The item's own text, not that of any list nested inside it.
+      let own = "";
+      for (const node of li.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) own += node.textContent;
+        else if (node.nodeType === Node.ELEMENT_NODE && node.tagName !== "UL" && node.tagName !== "OL") {
+          own += node.textContent;
+        }
+      }
+      own = own.replace(/\s+/g, " ").trim();
+      if (own) lines.push(`${"  ".repeat(depth)}${ordered ? n + ". " : "- "}${own}`);
+      n++;
+      for (const child of li.children) {
         if (child.tagName === "UL") walkList(child, false, depth + 1);
         else if (child.tagName === "OL") walkList(child, true, depth + 1);
-      });
-    });
+      }
+    }
   }
 
-  function walk(container) {
-    Array.from(container.children).forEach(el => {
-      const tag = el.tagName;
+  function walk(node) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) { run += child.textContent; continue; }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;      // comments, etc.
+      const tag = child.tagName;
+
+      if (tag === "SCRIPT" || tag === "STYLE" || tag === "HEAD") continue;
+      if (tag === "BR") { flush(); continue; }
       if (/^H[1-6]$/.test(tag)) {
-        const text = directText(el);
-        if (text) { lines.push("#".repeat(Number(tag[1])) + " " + text, ""); }
-      } else if (tag === "UL" || tag === "OL") {
-        walkList(el, tag === "OL", 0);
-        lines.push("");
-      } else if (tag === "P" || tag === "DIV" || tag === "LI") {
-        const text = directText(el);
-        if (text) { lines.push(text, ""); }
-        else walk(el);
-      } else if (tag === "BR") {
-        // skip
-      } else {
-        walk(el);
+        flush();
+        const text = oneLine(child);
+        if (text) lines.push("#".repeat(Number(tag[1])) + " " + text, "");
+        continue;
       }
-    });
+      if (tag === "UL" || tag === "OL") { walkList(child, tag === "OL", 0); lines.push(""); continue; }
+      if (tag === "HR") { flush(); lines.push("---", ""); continue; }
+      // Only semantic emphasis is kept. Inferring it from inline styles turns
+      // a Word paste into a thicket of asterisks.
+      if (tag === "STRONG" || tag === "B") { run += "**"; walk(child); run += "**"; continue; }
+      if (tag === "EM" || tag === "I")     { run += "*";  walk(child); run += "*";  continue; }
+      if (tag === "CODE")                  { run += "`";  walk(child); run += "`";  continue; }
+      if (HTML_BLOCK_TAGS.has(tag)) { flush(); walk(child); flush(); continue; }
+      walk(child);                                             // inline: keep going
+    }
   }
 
   walk(doc.body);
+  flush();
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -304,21 +328,31 @@ function attachLiveMarkdown(root, { onChange } = {}) {
     lastPush = now;
   };
 
+  // How far into the source a DOM position is. Both ends of a selection are
+  // measured this way: Range.toString() drops the newlines between lines, so
+  // deriving the end from its length replaced one character too few for every
+  // selection that spanned more than one line — corrupting paste, ⌘B, ⌘I and
+  // ⌘L alike.
+  const offsetOf = (container, offset) => {
+    if (!root.contains(container)) return null;
+    const probe = document.createRange();
+    probe.selectNodeContents(root);
+    probe.setEnd(container, offset);
+    const holder = document.createElement("div");
+    holder.appendChild(probe.cloneContents());
+    return mdReadValue(holder).length;
+  };
+
   // Applies an edit expressed on the source text, then repaints.
   const edit = (fn) => {
     const before = value();
     const sel = window.getSelection();
-    let start = mdCaretOffset(root) ?? before.length;
-    let end = start;
-    if (sel && sel.rangeCount && !sel.isCollapsed) {
+    let start = before.length, end = before.length;
+    if (sel && sel.rangeCount) {
       const r = sel.getRangeAt(0);
-      const probe = document.createRange();
-      probe.selectNodeContents(root);
-      probe.setEnd(r.startContainer, r.startOffset);
-      const holder = document.createElement("div");
-      holder.appendChild(probe.cloneContents());
-      start = mdReadValue(holder).length;
-      end = start + r.toString().length;
+      const from = offsetOf(r.startContainer, r.startOffset);
+      const to = sel.isCollapsed ? from : offsetOf(r.endContainer, r.endOffset);
+      if (from !== null && to !== null) { start = from; end = to; }
     }
     const result = fn(before, start, end);
     if (!result) return false;
@@ -346,11 +380,35 @@ function attachLiveMarkdown(root, { onChange } = {}) {
     repaint(next, caret);
   });
 
-  // Plain text only: pasted HTML would put tags in the source.
+  // Pasting inserts markdown text; raw HTML would put tags in the source.
+  //
+  // The plain text is the floor, and the converted HTML is only preferred when
+  // it actually carries something. An earlier version trusted the HTML
+  // whenever the clipboard had any, and pasted the empty string the converter
+  // returned for an inline fragment — which looked like paste failing at
+  // random, depending on what had been copied.
   root.addEventListener("paste", (e) => {
+    const data = e.clipboardData;
+    if (!data) return;                        // nothing to read; leave it alone
+    let text = data.getData("text/plain") || "";
+    const html = data.getData("text/html");
+    if (html) {
+      try {
+        const converted = htmlClipboardToMarkdown(html);
+        if (converted) text = converted;
+      } catch (err) {
+        /* malformed clipboard HTML: the plain text still gets pasted */
+      }
+    }
     e.preventDefault();
-    const html = e.clipboardData.getData("text/html");
-    const text = html ? htmlClipboardToMarkdown(html) : e.clipboardData.getData("text/plain");
+    if (!text) {
+      // An image or a file. A note is plain text, so there is nowhere to put
+      // it — say so rather than appearing to do nothing.
+      if (data.files && data.files.length) {
+        showToast("These notes hold text only — an image can't be pasted in.");
+      }
+      return;
+    }
     edit((v, s, en) => {
       const next = v.slice(0, s) + text + v.slice(en);
       return { value: next, caret: s + text.length };

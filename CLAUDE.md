@@ -197,6 +197,17 @@ that link would orphan the event on the far side.
   contributes no characters — that bug ate the blank line between every
   paragraph. A `<br>` inside a line is a soft break; a *trailing* `<br>` is the
   browser's placeholder for an empty block and is not text.
+- **Every offset into the source is measured with `mdReadValue()`**, including
+  both ends of a selection. `Range.toString()` drops the newlines between
+  lines, so deriving the end from its length replaced one character too few on
+  any selection spanning more than one line — quietly corrupting paste, ⌘B, ⌘I
+  and ⌘L alike.
+- **Paste falls back to `text/plain`, and only prefers the converted HTML when
+  that conversion produced something.** `htmlClipboardToMarkdown()` used to
+  walk block elements only, so a fragment copied from inside a paragraph — a
+  bare `<span>`, a `<b>`, a table cell, Word's selection wrapper — converted to
+  an empty string that was then pasted over the perfectly good plain text
+  sitting beside it on the clipboard. That was "sometimes I can't paste".
 - **⌘B / ⌘I / ⌘U / ⌘L work in every markdown field**, and lists carry on by
   themselves on Enter, ending when you press it on an empty item. Markdown has
   no underline, so ⌘U writes `<u>…</u>` — what Bear and Obsidian do, and what
