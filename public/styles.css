@@ -15,47 +15,60 @@
    =========================================================================== */
 
 :root {
-  /* Warm, low-chroma neutral ramp — paper, not grey. */
-  --paper:      #faf8f4;
+  /* Near-neutral, with only a trace of warmth left. The old ramp was warm
+     enough to read as aged paper, which is what made a modern palette sitting
+     on it look unfinished. */
+  --paper:      #fdfcfa;
   --surface:    #ffffff;
-  --surface-2:  #f2eee7;
-  --line:       #e5dfd4;
-  --line-soft:  #efeae1;
-  --ink:        #23211c;
-  --ink-2:      #635e54;
+  --surface-2:  #f4f2ee;
+  --line:       #e6e3dc;
+  --line-soft:  #f0eee9;
+  --ink:        #1a1917;
+  --ink-2:      #56534c;
   /* Tertiary carries the uppercase micro-labels and meta text, so it is
-     pitched to clear ~4.5:1 on paper rather than going as pale as it looks
+     pitched to clear 4.5:1 on paper rather than going as pale as it looks
      like it could. */
-  --ink-3:      #746e5f;
+  --ink-3:      #726e64;
 
-  /* Section hues. Same lightness/chroma band so they read as one family. */
-  --c-calendar-soft: #eaeefb;  --c-calendar: #4f6ed4;  --c-calendar-strong: #3f58ad;
-  --c-ideas-soft:    #f9f0dd;  --c-ideas:    #c2892c;  --c-ideas-strong:    #8a5f13;
-  --c-projects-soft: #e3f2ea;  --c-projects: #2e8f70;  --c-projects-strong: #226e56;
-  --c-focus-soft:    #fbeddf;  --c-focus:    #d2762f;  --c-focus-strong:    #9b5219;
-  --c-journal-soft:  #f0eafa;  --c-journal:  #8763c8;  --c-journal-strong:  #6a4aa6;
+  /* Section hues — the app icon's palette. The interface used to run duller
+     versions of these, which is why the icon never looked like it belonged to
+     the app it opened. "-soft" is a background, "-strong" is text on one.
+     Amber, green and orange are a step darker here than in the icon: the icon
+     carries no text, while these have to hold white at 3:1 and stand as
+     graphics on paper. Measured, not guessed — see the contrast table in the
+     commit that introduced them. */
+  --c-calendar-soft: #e8edfe;  --c-calendar: #5b7cf0;  --c-calendar-strong: #3a55bd;
+  --c-ideas-soft:    #fdf0d9;  --c-ideas:    #c1821c;  --c-ideas-strong:    #8f5f06;
+  --c-projects-soft: #d9f6ec;  --c-projects: #16a275;  --c-projects-strong: #0b6f4f;
+  --c-focus-soft:    #ffe9db;  --c-focus:    #f16214;  --c-focus-strong:    #ad490c;
+  --c-journal-soft:  #f1e8fe;  --c-journal:  #9560f0;  --c-journal-strong:  #6836bd;
 
   /* Live accent — reassigned per section, consumed by every component. */
   --accent:        var(--c-calendar);
   --accent-soft:   var(--c-calendar-soft);
   --accent-strong: var(--c-calendar-strong);
 
-  --danger:      #bf5340;
-  --danger-soft: #fbeeea;
-  --success:     #2e8f70;
-  --success-soft:#e3f2ea;
+  --danger:      #c53434;
+  --danger-soft: #fdeaea;
+  --success:     #0b6f4f;
+  --success-soft:#d9f6ec;
+  --now:         #e5484d;   /* the now-line, and a running timer */
 
   --r-sm: 8px;
   --r:    12px;
   --r-lg: 18px;
 
   /* Only two elevations exist: hover, and floating. */
-  --lift:  0 4px 16px rgba(40, 32, 14, 0.07);
-  --float: 0 24px 60px rgba(35, 28, 12, 0.18);
+  --lift:  0 1px 2px rgba(30, 26, 18, 0.05), 0 5px 16px rgba(30, 26, 18, 0.06);
+  --float: 0 24px 60px rgba(30, 26, 18, 0.17);
 
-  --font-serif: "Newsreader", Georgia, "Times New Roman", serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Both faces ship with macOS. The headings used to come from Google Fonts,
+     which meant a network request on every launch in an app that otherwise
+     touches nothing, and a silent fall back to Georgia whenever it failed —
+     which is the dated look it was there to avoid. */
+  --font-serif: ui-serif, "New York", Georgia, serif;
+  --font-sans:  "Avenir Next", "Avenir", ui-sans-serif, -apple-system, sans-serif;
+  --font-mono:  ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ease: 160ms cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
@@ -340,11 +353,11 @@ select { cursor: pointer; }
 
 .cal-now-line {
   position: absolute; left: 0; right: 0; height: 0;
-  border-top: 1.5px solid #d6483a; z-index: 3; pointer-events: none;
+  border-top: 1.5px solid var(--now); z-index: 3; pointer-events: none;
 }
 .cal-now-line::before {
   content: ""; position: absolute; left: -3px; top: -3.5px;
-  width: 7px; height: 7px; border-radius: 50%; background: #d6483a;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--now);
 }
 
 .cal-event {
@@ -673,7 +686,7 @@ select { cursor: pointer; }
 .focus-toggle-btn:hover { background: var(--accent-strong); }
 .focus-toggle-btn:active { transform: scale(0.97); }
 .focus-toggle-btn.running { background: var(--danger); }
-.focus-toggle-btn.running:hover { background: #a4432f; }
+.focus-toggle-btn.running:hover { background: #b62a2f; }
 .focus-hint { max-width: 260px; }
 
 .focus-summary-panel {

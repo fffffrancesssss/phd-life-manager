@@ -40,6 +40,21 @@ CALDAV_CACHE_FILE = os.path.join(DATA_DIR, "caldav_cache.json")
 GOOGLE_CONFIG_FILE = os.path.join(DATA_DIR, "google_config.json")
 GOOGLE_CACHE_FILE = os.path.join(DATA_DIR, "google_cache.json")
 SYNC_CONFIG_FILE = os.path.join(DATA_DIR, "sync_config.json")
+
+# Kept in step with COLORS in public/app.js.
+DEFAULT_BLOCK_COLOR = "#5b7cf0"
+# The palette moved to the app icon's hues; blocks saved under the old,
+# duller values are mapped across once at start so a calendar written
+# before the change does not stay two-toned. Mapping old to new only, so
+# running it again is a no-op.
+BLOCK_COLOR_MIGRATION = {
+    "#5b7fd6": "#5b7cf0",   # blue
+    "#4fa37b": "#16a275",   # green
+    "#c1533f": "#e5484d",   # red
+    "#c98a2c": "#c1821c",   # amber
+    "#8a5bd6": "#9560f0",   # purple
+    "#5c6570": "#6b7280",   # slate
+}
 ICLOUD_CALDAV_URL = "https://caldav.icloud.com/"
 FOCUS_SESSIONS_FILE = os.path.join(DATA_DIR, "focus_sessions.json")
 JOURNAL_DIR = os.path.join(DATA_DIR, "journal")
@@ -90,6 +105,27 @@ def ensure_data():
         save_json(SYNC_CONFIG_FILE, {"provider": "icloud" if was_icloud else "none"})
     os.makedirs(JOURNAL_DAILY_DIR, exist_ok=True)
     os.makedirs(JOURNAL_WEEKLY_DIR, exist_ok=True)
+    migrate_block_colors()
+
+
+def migrate_block_colors():
+    """Repaint blocks saved under the previous, duller palette.
+
+    Cosmetic and one-way: only the six old values are touched, and the new
+    ones are not keys, so this settles after the first run.
+    """
+    try:
+        events = load_json(CALENDAR_FILE)
+    except (OSError, ValueError):
+        return
+    changed = False
+    for e in events:
+        new_color = BLOCK_COLOR_MIGRATION.get((e.get("color") or "").lower())
+        if new_color:
+            e["color"] = new_color
+            changed = True
+    if changed:
+        save_json(CALENDAR_FILE, events)
 
 
 def load_json(path):
@@ -540,7 +576,7 @@ def reconcile_todos_calendar(start_local, end_local):
             "title": r["title"],
             "start": r["start"],
             "end": r["end"],
-            "color": "#5b7fd6",
+            "color": DEFAULT_BLOCK_COLOR,
             "todoId": None,
             "type": "block",
             "icloudUid": uid,
@@ -1356,7 +1392,7 @@ def reconcile_google_blocks(start_local, end_local):
         kept.append({
             "id": new_id("evt"),
             "title": r["title"], "start": r["start"], "end": r["end"],
-            "color": "#5b7fd6", "todoId": None, "type": "block",
+            "color": DEFAULT_BLOCK_COLOR, "todoId": None, "type": "block",
             "icloudUid": None, "icloudUrl": None,
             "googleId": gid, "googleCalendarId": cal_id,
             "calendarName": r["calendar"],
@@ -1388,11 +1424,11 @@ def google_result_page(heading, message):
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>{escape_html(heading)} — PhD Life Manager</title></head>
 <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
-             background:#faf8f4;color:#23211c;
+             background:#fdfcfa;color:#1a1917;
              font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
   <div style="max-width:30rem;padding:2.5rem;text-align:center">
-    <h1 style="font:600 22px/1.3 Georgia,serif;margin:0 0 .6rem">{escape_html(heading)}</h1>
-    <p style="margin:0;color:#635e54">{escape_html(message)}</p>
+    <h1 style="font:600 22px/1.3 ui-serif,'New York',Georgia,serif;margin:0 0 .6rem">{escape_html(heading)}</h1>
+    <p style="margin:0;color:#56534c">{escape_html(message)}</p>
   </div>
 </body></html>"""
 
@@ -2065,7 +2101,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "title": body.get("title") or "Untitled block",
                     "start": body["start"],
                     "end": body["end"],
-                    "color": body.get("color") or "#5b7fd6",
+                    "color": body.get("color") or DEFAULT_BLOCK_COLOR,
                     "todoId": body.get("todoId"),
                     "type": body.get("type") or "block",
                     "icloudUid": None,

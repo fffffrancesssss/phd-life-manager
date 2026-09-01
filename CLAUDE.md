@@ -155,6 +155,22 @@ that link would orphan the event on the far side.
   component reads `--accent` / `--accent-soft` / `--accent-strong`, so no
   component knows about sections. Calendar indigo, ideas amber, projects teal,
   focus orange, journal violet.
+- **The section hues are the app icon's palette**, not a separate one. They
+  used to be duller versions, which is why the icon never looked like it
+  belonged to the app it opened. Amber, green and orange are one step darker
+  in the interface than in the icon, and that gap is deliberate: the icon
+  carries no text, while these have to hold white at 3:1 and stand as graphics
+  on paper. `COLORS` in `app.js` (what a block is painted) and
+  `BLOCK_COLOR_MIGRATION` in `server.py` are kept in step with them.
+- **Every text/background pair is measured, not eyeballed** — body and
+  secondary text at 4.5:1, hues used as graphics or carrying white labels at
+  3:1. The first pass at the icon's palette failed six of those pairs; the
+  fix was to darken three hues until they cleared, which is where the
+  interface/icon gap came from.
+- **No web fonts.** Headings are `ui-serif` (New York on macOS), body is
+  Avenir Next; both ship with the OS. Headings used to come from Google Fonts,
+  which meant an outbound request on every launch of an app that otherwise
+  touches nothing, and a silent fall back to Georgia whenever it failed.
 - **All calendar block positioning goes through `calBlockGeometry()`**, which
   clamps to the visible hours. Without it, anything before 7am gets a negative
   offset and paints over the headers, and an overnight session overflows the

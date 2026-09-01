@@ -547,13 +547,17 @@ function calBlockGeometry(start, end) {
     clipped: startH < gridStart || endH > gridEnd,
   };
 }
+// What a calendar block can be painted. These are the icon's hues, matched to
+// the section colours in styles.css — a block used to be a duller blue than
+// anything else on the page. Blocks saved under the old values are migrated
+// on start by migrate_block_colors() in server.py.
 const COLORS = [
-  { value: "#5b7fd6", label: "Blue" },
-  { value: "#4fa37b", label: "Green" },
-  { value: "#c1533f", label: "Red" },
-  { value: "#c98a2c", label: "Amber" },
-  { value: "#8a5bd6", label: "Purple" },
-  { value: "#5c6570", label: "Slate" },
+  { value: "#5b7cf0", label: "Blue" },
+  { value: "#16a275", label: "Green" },
+  { value: "#e5484d", label: "Red" },
+  { value: "#c1821c", label: "Amber" },
+  { value: "#9560f0", label: "Purple" },
+  { value: "#6b7280", label: "Slate" },
 ];
 
 async function handleApiResponse(r) {
@@ -1228,7 +1232,7 @@ function renderCalendarGrid() {
         const geo = calBlockGeometry(s, en);
         evEl.style.top = geo.top + "px";
         evEl.style.height = geo.height + "px";
-        paintBlockByCalendar(evEl, ev.calendarName, ev.color || "#5b7fd6");
+        paintBlockByCalendar(evEl, ev.calendarName, ev.color || COLORS[0].value);
         const synced = ev.icloudUid ? " ☁︎" : "";
         evEl.title = `${ev.title} · ${fmtTime(s)}–${fmtTime(en)}`;
         evEl.innerHTML = `<span class="ev-name">${escapeHtml(ev.title)}${synced}</span>`
