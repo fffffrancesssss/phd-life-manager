@@ -310,6 +310,36 @@ select { cursor: pointer; }
 .icloud-btn.error { color: var(--danger); border-color: transparent; background: var(--danger-soft); }
 
 .cal-scroll { overflow-x: auto; }
+
+/* The calendar fills the window and scrolls inside itself.
+   It used to be laid out at its natural height inside the page scroller, so a
+   window taller than the grid left a slab of empty paper under it — the page
+   read as unfinished — and a shorter one scrolled the toolbar away with it.
+   Now the toolbar is fixed, the day headers stay stuck to the top of the
+   scrolling area (they were already `sticky`; they simply had no scroller of
+   their own to stick to), and the grid ends where the window does. */
+body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; }
+#tab-calendar.active { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* Shrink to the window, but never stretch past the grid: `1 1 auto` would
+   leave dead space *inside* the frame on a tall display, which is the same
+   unfinished look one level down. At its natural height the card ends at
+   11 PM — a finished day — and on anything shorter it scrolls. */
+#tab-calendar .cal-scroll {
+  flex: 0 1 auto; min-height: 0; overflow: auto;
+  border-radius: var(--r);
+}
+/* The grid's own border would scroll away with the content, so the frame
+   lives on the scroller and the grid inside it goes borderless. Dropping its
+   `overflow: hidden` matters as much as the border: an ancestor that clips —
+   it was there only to round the corners the scroller now owns — disables
+   `position: sticky` on the day headers, which is why they scrolled away. */
+#tab-calendar .cal-scroll { border: 1px solid var(--line-soft); background: var(--surface); }
+#tab-calendar .calendar-grid { border: none; border-radius: 0; overflow: visible; }
+
+/* The focus time log sits inside a page that scrolls, so it is bounded rather
+   than stretched — a full day at 40px an hour is 960px, which would otherwise
+   push everything under it off the screen. */
+#tab-focus .cal-scroll { max-height: 460px; overflow: auto; }
 .calendar-grid {
   display: grid;
   grid-template-columns: 54px repeat(7, minmax(118px, 1fr));

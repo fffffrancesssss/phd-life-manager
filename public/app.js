@@ -530,7 +530,12 @@ function resetMarkdownEditor(id) {
   if (handle) handle.value = "";
 }
 
-const HOURS = Array.from({ length: 17 }, (_, i) => i + 7); // 7am .. 11pm
+// The whole day. The grid used to start at 7am and stop at 11pm, which
+// quietly refused to hold an early start or a late night; the panel scrolls
+// instead, and opens near the hours you actually work — see
+// scrollCalendarIntoView().
+const HOURS = Array.from({ length: 24 }, (_, i) => i);   // midnight .. 11pm
+const CAL_DEFAULT_HOUR = 7;      // where the day is parked when today is not in view
 const CAL_HOUR_PX = 40;
 
 function calBlockGeometry(start, end) {
@@ -1176,7 +1181,38 @@ function paintBlockByCalendar(el, calendarName, solidColor) {
   }
 }
 
+// The grid is rebuilt on every write, and emptying it collapses the scroller
+// to nothing — which would throw the view back to midnight after every drag.
+// renderCalendarGrid() therefore saves scrollTop and puts it back.
+
+// Where a 24-hour grid should sit when it opens: around now if today is on
+// screen, otherwise at the start of a working day. Nobody wants to arrive at
+// midnight, and starting at 7am again would just reinstate the old window by
+// another means — the small hours stay one scroll away.
+function parkDayScroller(scroller, weekStart, { smooth = false } = {}) {
+  if (!scroller) return;
+  const now = new Date();
+  const showsToday = dateKey(now) >= dateKey(weekStart)
+                  && dateKey(now) <= dateKey(addDays(weekStart, 6));
+  const hour = showsToday ? Math.max(0, now.getHours() - 2) : CAL_DEFAULT_HOUR;
+  const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  const top = Math.min(hour * CAL_HOUR_PX, max);
+  if (smooth && scroller.scrollTo) scroller.scrollTo({ top, behavior: "smooth" });
+  else scroller.scrollTop = top;
+}
+
+function scrollCalendarIntoView(opts) {
+  parkDayScroller(document.querySelector("#tab-calendar .cal-scroll"), state.weekStart, opts);
+}
+
+function scrollFocusCalendarIntoView(opts) {
+  parkDayScroller(document.querySelector("#tab-focus .cal-scroll"),
+                  state.focus.calendarWeekStart, opts);
+}
+
 function renderCalendarGrid() {
+  const scroller = document.querySelector("#tab-calendar .cal-scroll");
+  const keep = scroller ? scroller.scrollTop : 0;
   const grid = document.getElementById("calendar-grid");
   grid.innerHTML = "";
 
@@ -1279,6 +1315,8 @@ function renderCalendarGrid() {
 
     grid.appendChild(col);
   });
+
+  if (scroller && scroller.scrollTop !== keep) scroller.scrollTop = keep;
 }
 
 function toDatetimeLocalValue(d) { return toLocalISO(d).slice(0, 16); }
@@ -1579,6 +1617,7 @@ async function loadExternalEvents() {
 function showCalendarWeek() {
   renderCalendarGrid();
   updateCalRangeLabel();
+  scrollCalendarIntoView({ smooth: true });
   loadCachedExternalEvents().then(() => {
     renderCalendarGrid();
     return loadExternalEvents();
@@ -2417,6 +2456,8 @@ async function loadFocusCalendar() {
 }
 
 function renderFocusCalendarGrid() {
+  const scroller = document.querySelector("#tab-focus .cal-scroll");
+  const keep = scroller ? scroller.scrollTop : 0;
   const grid = document.getElementById("focus-calendar-grid");
   grid.innerHTML = "";
 
@@ -2488,19 +2529,21 @@ function renderFocusCalendarGrid() {
 
     grid.appendChild(col);
   });
+
+  if (scroller && scroller.scrollTop !== keep) scroller.scrollTop = keep;
 }
 
 document.getElementById("focus-cal-prev").addEventListener("click", () => {
   state.focus.calendarWeekStart = addDays(state.focus.calendarWeekStart, -7);
-  loadFocusCalendar();
+  loadFocusCalendar().then(() => scrollFocusCalendarIntoView({ smooth: true }));
 });
 document.getElementById("focus-cal-next").addEventListener("click", () => {
   state.focus.calendarWeekStart = addDays(state.focus.calendarWeekStart, 7);
-  loadFocusCalendar();
+  loadFocusCalendar().then(() => scrollFocusCalendarIntoView({ smooth: true }));
 });
 document.getElementById("focus-cal-today").addEventListener("click", () => {
   state.focus.calendarWeekStart = startOfWeek(new Date());
-  loadFocusCalendar();
+  loadFocusCalendar().then(() => scrollFocusCalendarIntoView({ smooth: true }));
 });
 
 async function refreshAfterFocusSessionEdit(sessionId, updatedOrNull) {
@@ -3245,7 +3288,13 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
     // Hands the section's hue to every component via the --accent tokens.
     document.body.dataset.domain = btn.dataset.tab;
-    if (btn.dataset.tab === "focus") { loadFocusCurrent(); loadFocusSummary(); loadFocusCalendar(); }
+    if (btn.dataset.tab === "focus") {
+      loadFocusCurrent(); loadFocusSummary();
+      loadFocusCalendar().then(() => scrollFocusCalendarIntoView());
+    }
+    // Coming back to the calendar re-parks it, so a week left scrolled to
+    // 3am is not what greets you.
+    if (btn.dataset.tab === "calendar") scrollCalendarIntoView();
     if (btn.dataset.tab === "journal") { loadRecapWeeks().then(loadRecap); }
   });
 });
@@ -3274,6 +3323,7 @@ async function loadAll() {
   renderTodos();
   renderCalendarGrid();
   updateCalRangeLabel();
+  scrollCalendarIntoView();
   renderIdeas();
   renderProjects();
 

@@ -171,10 +171,29 @@ that link would orphan the event on the far side.
   Avenir Next; both ship with the OS. Headings used to come from Google Fonts,
   which meant an outbound request on every launch of an app that otherwise
   touches nothing, and a silent fall back to Georgia whenever it failed.
+- **The calendar shows the whole day and scrolls inside itself.** `HOURS` is
+  0–23; the grid used to stop at 7am–11pm, which quietly refused to hold an
+  early start or a late night. The panel is a flex column filling the window,
+  `.cal-scroll` is the scroller, and the page itself does not scroll on that
+  tab — so the toolbar stays put and there is no slab of empty paper under a
+  short grid. The scroller is `flex: 0 1 auto`, not `1 1 auto`: stretching it
+  past the grid would put the dead space *inside* the frame instead.
+- **Two things that grid depends on, both easy to undo by accident:**
+  - `.calendar-grid` must not have `overflow: hidden`. It carried it to round
+    its own corners, and any clipping ancestor between a `position: sticky`
+    element and its scroller disables sticky — which silently scrolled the day
+    headers away. The frame and radius now live on `.cal-scroll` instead.
+  - `renderCalendarGrid()` saves and restores `scrollTop`. Emptying the grid
+    collapses the scroller to nothing, so without this every optimistic write
+    would throw the view back to midnight mid-drag.
+- **A 24-hour grid has to open somewhere sensible.** `parkDayScroller()` puts
+  it near now when today is on screen and at 7am otherwise. Parking it at 7am
+  unconditionally would just rebuild the old window by another means.
 - **All calendar block positioning goes through `calBlockGeometry()`**, which
-  clamps to the visible hours. Without it, anything before 7am gets a negative
-  offset and paints over the headers, and an overnight session overflows the
-  grid. Both were live bugs.
+  clamps to the visible hours. Without it a session that runs past midnight
+  overflows the grid, and any hour outside the range paints over the headers —
+  both were live bugs when the range was narrower, and the clamp is what keeps
+  the focus grid honest too.
 - **Never animate a full-viewport element or a panel from `opacity: 0`.** Two
   separate "page flashes" traced to exactly this: a tab-panel entrance
   animation, and `backdrop-filter` plus default `animation-fill-mode` on the
