@@ -100,6 +100,21 @@ Switching does not migrate anything. Blocks already synced keep their
 `icloudUid`/`googleId` and keep updating wherever they were created — losing
 that link would orphan the event on the far side.
 
+**The page never decides whether a write should be attempted.** It sends
+`syncToCalendar` when a provider is *selected*; whether the connection is
+healthy is the server's call at the moment of writing, and it reports failure
+back as `syncWarning`. `syncEnabled()` exists only for what the toolbar says
+and which calendars the editor lists. This distinction is load-bearing: when
+the page gated the request on a status fetched at launch, one transient iCloud
+hiccup switched sync off for the whole session — every block made afterwards
+was created locally with no attempt and no warning, and nothing re-checked
+until the app restarted. `refreshLiveData()` now re-checks the status too.
+
+**A block that never reached the calendar retries when it is edited**
+(`route_events` PUT). Every other sync branch needs an `icloudUid`/`googleId`
+to address, so without this a block that missed its one chance stayed
+stranded for good.
+
 `ensure_data()` migrates an install that predates the setting: if
 `caldav_config.json` has credentials, the provider defaults to `icloud`, not
 `none`. Getting this wrong silently switches off a working calendar on upgrade.

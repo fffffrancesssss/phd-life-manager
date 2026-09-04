@@ -373,6 +373,10 @@ def invalidate_caldav_events_cache():
         _caldav_events_cache.clear()
 
 
+def todos_calendar_name():
+    return (load_caldav_config().get("todos_calendar_name") or "Todos").strip()
+
+
 def find_todos_calendar(principal, cfg):
     name = (cfg.get("todos_calendar_name") or "Todos").strip().lower()
     try:
@@ -2166,7 +2170,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           and target_calendar.strip().lower() != (events[idx]["calendarName"] or "").strip().lower())
                 sync_warning = None
                 changed_fields = any(events[idx].get(k) != before[k] for k in before)
-                if events[idx].get("icloudUid") and changed_fields:
+                provider = sync_provider()
+                unsynced = not events[idx].get("icloudUid") and not events[idx].get("googleId")
+                if unsynced and provider != "none":
+                    # A block that never reached the calendar — the connection
+                    # was down when it was made, or the page believed sync was
+                    # off. Editing it is the natural moment to try again;
+                    # without this it stays stranded for good, because every
+                    # branch below needs an id it does not have.
+                    try:
+                        if provider == "icloud":
+                            events[idx]["icloudUid"], events[idx]["icloudUrl"] = caldav_create_event(
+                                events[idx]["title"], events[idx]["start"], events[idx]["end"],
+                                calendar_name=target_calendar or events[idx].get("calendarName"))
+                            if not events[idx].get("calendarName"):
+                                events[idx]["calendarName"] = target_calendar or todos_calendar_name()
+                        elif provider == "google":
+                            events[idx]["googleId"], events[idx]["googleCalendarId"] = google_create_event(
+                                events[idx]["title"], events[idx]["start"], events[idx]["end"])
+                    except ApiError as e:
+                        sync_warning = str(e)
+                elif events[idx].get("icloudUid") and changed_fields:
                     try:
                         url = events[idx].get("icloudUrl")
                         if not url:

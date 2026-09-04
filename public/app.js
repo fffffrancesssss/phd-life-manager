@@ -1019,9 +1019,21 @@ function deleteExternalEvent(ev) {
     .finally(() => { externalWrites--; });
 }
 
-// Whether a new block has anywhere to sync to. The server decides *which*
-// account from the selected provider; this only answers yes or no, so the
-// page and the server can never disagree about the destination.
+// Whether a new block should be pushed to a calendar service at all.
+//
+// Deliberately *not* "is the connection healthy right now" — that is the
+// server's call, at the moment of writing, holding a live connection, and it
+// already reports back a syncWarning when it fails. Gating the request here
+// on a status the page fetched at launch meant a single transient iCloud
+// hiccup switched sync off for the rest of the session: every block made
+// afterwards was created locally with no attempt and no warning, and nothing
+// re-checked until the app was restarted.
+function syncRequested() {
+  return state.syncProvider === "icloud" || state.syncProvider === "google";
+}
+
+// Whether the connection is believed good — for what the toolbar says and
+// which calendars the editor offers. Never for deciding to attempt a write.
 function syncEnabled() {
   if (state.syncProvider === "icloud") {
     return !!(state.icloudStatus && state.icloudStatus.configured && state.icloudStatus.todosCalendarFound);
@@ -1057,7 +1069,7 @@ function scheduleTodoOnDrop(todoId, day, hour) {
   const end = new Date(start.getTime() + 60 * 60000);
   createEvent({
     title: todoDisplayText(todo), start: toLocalISO(start), end: toLocalISO(end), todoId: todo.id,
-    syncToCalendar: syncEnabled(),
+    syncToCalendar: syncRequested(),
   });
 }
 
@@ -1460,7 +1472,7 @@ function openEventModal(opts) {
       createEvent({
         title, start: start + ":00", end: end + ":00",
         color: colorEl ? colorEl.value : COLORS[0].value,
-        syncToCalendar: syncEnabled(), calendarName: targetCal,
+        syncToCalendar: syncRequested(), calendarName: targetCal,
       });
     }
     closeModal();
@@ -3412,6 +3424,10 @@ async function refreshLiveData({ force = false } = {}) {
   if (!force && now - lastDataRefresh < REFRESH_THROTTLE_MS) return;
   lastDataRefresh = now;
   try {
+    // Re-check the connection as well. It used to be read once at launch, so
+    // a hiccup then left the toolbar reading "connection error" and the
+    // editor offering no calendars until the app was restarted.
+    loadSyncStatus();
     const [todos, events] = await Promise.all([API.get("/api/todos"), API.get("/api/events")]);
     state.todos = todos;
     state.events = events;
