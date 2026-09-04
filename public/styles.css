@@ -659,8 +659,10 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
   color: var(--ink-3); pointer-events: none;
 }
 /* Each line is its own block so an empty one still has height and the caret
-   has somewhere to sit. */
-.md-ln { min-height: 1.72em; }
+   has somewhere to sit. A nested list item is padded by its depth: the two
+   spaces that make it nested stay in the text, where they belong, but on
+   their own they are far too faint to read as a level. */
+.md-ln { min-height: 1.72em; padding-left: calc(var(--md-depth, 0) * 1.25em); }
 
 /* The syntax itself, pushed back so the styled text reads first. */
 .md-mark { color: var(--ink-3); opacity: 0.45; font-weight: 400; font-style: normal; }

@@ -272,6 +272,15 @@ stranded for good.
   bare `<span>`, a `<b>`, a table cell, Word's selection wrapper — converted to
   an empty string that was then pasted over the perfectly good plain text
   sitting beside it on the clipboard. That was "sometimes I can't paste".
+- **Tab nests a list item, Shift-Tab lifts it back out** — two spaces a level,
+  which is what the clipboard converter emits and what every renderer reads.
+  Two things it has to respect: an item may only go *one* level deeper than
+  the item above it (anything more is indented text that no renderer treats as
+  a sub-list), and Tab is only intercepted on a list line, so the editor never
+  traps the keyboard.
+- **A nested item is padded by its depth** (`--md-depth` on the line, set in
+  `mdLineDiv()`). The indent has to stay in the text because the text *is* the
+  source, but two spaces on their own are far too faint to read as a level.
 - **⌘B / ⌘I / ⌘U / ⌘L work in every markdown field**, and lists carry on by
   themselves on Enter, ending when you press it on an empty item. Markdown has
   no underline, so ⌘U writes `<u>…</u>` — what Bear and Obsidian do, and what

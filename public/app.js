@@ -191,7 +191,7 @@ function mdLineHtml(line) {
   if (list) {
     const [, indent, marker, checkbox, gap, content] = list;
     const done = checkbox && /[xX]/.test(checkbox);
-    return escapeHtml(indent) + mdMark(marker + (checkbox || "") + gap)
+    return mdMark(indent + marker + (checkbox || "") + gap)
          + `<span class="md-item${done ? " done" : ""}">${mdInline(content)}</span>`;
   }
   return mdInline(line);
@@ -292,9 +292,26 @@ function mdSetCaret(root, offset) {
   sel.addRange(range);
 }
 
+// Two spaces per level, which is what the clipboard converter emits and what
+// every renderer accepts as a nested list.
+const MD_INDENT = "  ";
+
+function mdDepth(line) {
+  const m = line.match(MD_LIST_RE);
+  return m ? Math.floor(m[1].replace(/\t/g, MD_INDENT).length / MD_INDENT.length) : 0;
+}
+
+// The indent has to stay in the text — it is part of the source — so the
+// depth is also published as a custom property, and the line is padded by it.
+// Two spaces alone is far too faint to read as a sub-list.
+function mdLineDiv(line) {
+  const depth = mdDepth(line);
+  const style = depth ? ` style="--md-depth:${depth}"` : "";
+  return `<div class="md-ln"${style}>${mdLineHtml(line)}</div>`;
+}
+
 function mdPaint(root, value) {
-  root.innerHTML = value.split("\n")
-    .map(line => `<div class="md-ln">${mdLineHtml(line)}</div>`).join("");
+  root.innerHTML = value.split("\n").map(mdLineDiv).join("");
   root.classList.toggle("is-empty", value === "");
 }
 
@@ -427,6 +444,57 @@ function attachLiveMarkdown(root, { onChange } = {}) {
       return;
     }
 
+    // Tab nests a list item under the one above it; Shift-Tab brings it back
+    // out. Only on list lines — everywhere else Tab keeps its usual job of
+    // moving on, so the editor never traps the keyboard.
+    if (e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const handled = edit((v, s0, en) => {
+        const from = v.lastIndexOf("\n", s0 - 1) + 1;
+        let to = v.indexOf("\n", en);
+        if (to === -1) to = v.length;
+        const lines = v.slice(from, to).split("\n");
+        if (!lines.some(l => MD_LIST_RE.test(l))) return null;   // not a list
+
+        // A list item can only ever be one level deeper than the item above
+        // it. Allowing more produces indented text that no renderer reads as
+        // a sub-list, so the first line's headroom caps the whole block.
+        let ceiling = 0;
+        // Up to `from - 1`, not `from`: slicing through the newline leaves a
+        // trailing empty string that ends the scan on its first step, so
+        // nothing ever had any headroom and Tab did nothing.
+        const before = v.slice(0, Math.max(0, from - 1)).split("\n");
+        for (let i = before.length - 1; i >= 0; i--) {
+          if (!before[i].trim()) break;
+          if (MD_LIST_RE.test(before[i])) { ceiling = mdDepth(before[i]) + 1; break; }
+        }
+        const firstDepth = mdDepth(lines.find(l => MD_LIST_RE.test(l)) || "");
+        if (!e.shiftKey && firstDepth >= ceiling) return null;
+        if (e.shiftKey && firstDepth === 0) return null;
+
+        let shifted = 0;
+        const next = lines.map(line => {
+          if (!MD_LIST_RE.test(line)) return line;
+          if (e.shiftKey) {
+            const trimmed = line.startsWith(MD_INDENT) ? line.slice(MD_INDENT.length) : line;
+            if (trimmed !== line && shifted === 0) shifted = -MD_INDENT.length;
+            return trimmed;
+          }
+          if (shifted === 0) shifted = MD_INDENT.length;
+          return MD_INDENT + line;
+        }).join("\n");
+
+        // A collapsed caret keeps its place in the line it was on; a
+        // selection takes in the whole block it just moved.
+        const collapsed = s0 === en;
+        return {
+          value: v.slice(0, from) + next + v.slice(to),
+          caret: collapsed ? Math.max(from, s0 + shifted) : from + next.length,
+        };
+      });
+      if (handled) { e.preventDefault(); return; }
+      return;                                  // let Tab move focus as usual
+    }
+
     if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
       const handled = edit((v, s, en) => {
         const lineStart = v.lastIndexOf("\n", s - 1) + 1;
@@ -506,7 +574,7 @@ function markdownEditorHtml(id, value, { placeholder = "", compact = false } = {
   const cls = compact ? " compact" : "";
   return `<div id="${id}" class="md-live${cls}" contenteditable="true" spellcheck="true"
     data-placeholder="${escapeAttr(placeholder)}">${
-      (value || "").split("\n").map(l => `<div class="md-ln">${mdLineHtml(l)}</div>`).join("")
+      (value || "").split("\n").map(mdLineDiv).join("")
     }</div>`;
 }
 
