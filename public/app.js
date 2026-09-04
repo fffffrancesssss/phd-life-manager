@@ -494,6 +494,7 @@ function attachLiveMarkdown(root, { onChange } = {}) {
   });
 
   return {
+    root,
     get value() { return value(); },
     set value(v) { push(v, v.length, true); repaint(v, v.length); },
     focus() { root.focus(); },
@@ -521,12 +522,33 @@ function wireMarkdownEditor(id, onChange) {
 
 // What the dialogs call instead of reading .value off a textarea.
 function markdownValue(id) {
+  const handle = liveEditor(id);
+  if (handle) return handle.value;
+  const root = document.getElementById(id);
+  return root ? mdReadValue(root) : "";
+}
+
+// Dialogs are rebuilt from scratch each time they open, so a handle recorded
+// under an id can belong to a node that is no longer in the document. Reading
+// or writing through one of those silently does nothing — which is how a
+// restored draft came back with its title but not its body.
+function liveEditor(id) {
   const handle = mdEditors.get(id);
-  return handle ? handle.value : "";
+  if (handle && handle.root && handle.root.isConnected) return handle;
+  if (handle) mdEditors.delete(id);
+  return null;
+}
+
+// Put text into an editor, whether or not it has been wired yet.
+function mdEditorsSetValue(id, value) {
+  const handle = liveEditor(id);
+  if (handle) { handle.value = value; return; }
+  const root = document.getElementById(id);
+  if (root) mdPaint(root, value);      // wiring later reads it back out of the DOM
 }
 
 function resetMarkdownEditor(id) {
-  const handle = mdEditors.get(id);
+  const handle = liveEditor(id);
   if (handle) handle.value = "";
 }
 
@@ -626,6 +648,98 @@ function showToast(message, kind = "info") {
   setTimeout(dismiss, TOAST_MS);
 }
 
+// ---------------------------------------------------------------- autosave
+//
+// Losing a paragraph to a stray click outside a dialog is not something an
+// app should ever do. Editors now keep themselves: a memo or idea that
+// already exists is written back as you type, and one that does not exist yet
+// is kept as a draft on this machine until it is created.
+//
+// Two rules make the difference between "closed" and "lost":
+//   · A save still counting down is flushed when the dialog goes away, so the
+//     last thing typed is never the thing that is missing.
+//   · Clicking outside keeps a draft; only Cancel throws one away. The stray
+//     click is the accident being guarded against, so it cannot be the
+//     gesture that discards.
+
+const AUTOSAVE_DELAY_MS = 700;
+let pendingAutosave = null;      // { timer, run } — at most one at a time
+
+function scheduleAutosave(run) {
+  if (pendingAutosave) clearTimeout(pendingAutosave.timer);
+  pendingAutosave = { run, timer: setTimeout(() => {
+    const job = pendingAutosave;
+    pendingAutosave = null;
+    if (job) job.run();
+  }, AUTOSAVE_DELAY_MS) };
+}
+
+// Cancel means "throw this away", so the countdown must not fire afterwards
+// and put it back.
+function cancelPendingAutosave() {
+  if (!pendingAutosave) return;
+  clearTimeout(pendingAutosave.timer);
+  pendingAutosave = null;
+}
+
+// Called whenever a dialog closes, however it closes.
+function flushAutosave() {
+  if (!pendingAutosave) return;
+  clearTimeout(pendingAutosave.timer);
+  const job = pendingAutosave;
+  pendingAutosave = null;
+  job.run();
+}
+
+// Wires a dialog's fields to a save function and reports what it is doing in
+// a quiet line by the buttons.
+function attachAutosave({ fields = [], editors = [], save, noteId }) {
+  const note = noteId ? document.getElementById(noteId) : null;
+  const say = (text, cls = "") => {
+    if (note) { note.textContent = text; note.className = "autosave-note " + cls; }
+  };
+  let generation = 0;
+  const run = async () => {
+    const mine = ++generation;
+    try {
+      await save();
+      if (mine === generation) say("Saved", "done");
+    } catch (e) {
+      if (mine === generation) say("Not saved — " + e.message, "error");
+    }
+  };
+  const touched = () => { say("Saving…"); scheduleAutosave(run); };
+
+  fields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", touched);
+  });
+  editors.forEach(id => wireMarkdownEditor(id, touched));
+  return { flush: flushAutosave, saveNow: run };
+}
+
+// ---------------------------------------------------------------- drafts
+// Somewhere to put words that have no record to belong to yet. Per machine
+// and disposable — the moment the thing is created the draft is dropped.
+
+const DRAFT_PREFIX = "phd-draft:";
+
+function saveDraft(key, data) {
+  try { localStorage.setItem(DRAFT_PREFIX + key, JSON.stringify(data)); } catch (e) { /* private window, full disk */ }
+}
+function loadDraft(key) {
+  try { return JSON.parse(localStorage.getItem(DRAFT_PREFIX + key) || "null"); } catch (e) { return null; }
+}
+function clearDraft(key) {
+  try { localStorage.removeItem(DRAFT_PREFIX + key); } catch (e) { /* nothing to clear */ }
+}
+
+// A draft is only worth keeping, or mentioning, if something was actually
+// written in it.
+function draftHasContent(draft) {
+  return !!draft && Object.values(draft).some(v => typeof v === "string" && v.trim());
+}
+
 // ---------------------------------------------------------------- modal
 
 function openModal(html, opts = {}) {
@@ -635,6 +749,7 @@ function openModal(html, opts = {}) {
   document.getElementById("modal-backdrop").classList.remove("hidden");
 }
 function closeModal() {
+  flushAutosave();
   document.getElementById("modal-backdrop").classList.add("hidden");
   const modalEl = document.getElementById("modal");
   modalEl.innerHTML = "";
@@ -1939,6 +2054,7 @@ document.getElementById("idea-form").addEventListener("submit", async (e) => {
   const tags = tagsEl.value.split(",").map(s => s.trim()).filter(Boolean);
   const idea = await API.post("/api/ideas", { title, text, tags });
   state.ideas.push(idea);
+  clearDraft(IDEA_DRAFT_KEY);
   titleEl.value = ""; tagsEl.value = "";
   resetMarkdownEditor("idea-input");
   renderIdeas();
@@ -2007,30 +2123,47 @@ function openIdeaModal(idea) {
       <div class="modal-actions">
         <button class="danger-btn" id="idea-delete">Delete</button>
         <button class="secondary-btn" id="idea-move">Move to project…</button>
+        <div id="idea-autosave" class="autosave-note"></div>
         <div class="spacer"></div>
-        <button class="secondary-btn" id="idea-cancel">Cancel</button>
-        <button class="primary-btn" id="idea-save">Save</button>
+        <button class="primary-btn" id="idea-done">Done</button>
       </div>
     `, { large: true });
-    wireMarkdownEditor("idea-edit-text");
+
+    // As with memos: the idea exists, so it is written back as you type and
+    // Done only stops editing.
+    const saveIdea = async () => {
+      const title = document.getElementById("idea-edit-title").value.trim();
+      const text = markdownValue("idea-edit-text").trim();
+      const tags = document.getElementById("idea-edit-tags").value.split(",").map(s => s.trim()).filter(Boolean);
+      if (!text) return;              // an idea with no text is not worth writing
+      const sameLinks = links.length === idea.links.length && links.every(l => idea.links.includes(l));
+      if (title === (idea.title || "") && text === idea.text
+          && tags.join() === idea.tags.join() && sameLinks) return;
+      Object.assign(idea, await API.put(`/api/ideas/${idea.id}`, { title, text, tags, links }));
+      const i = state.ideas.findIndex(x => x.id === idea.id);
+      if (i >= 0) state.ideas[i] = idea;
+      renderIdeas();
+    };
+    const auto = attachAutosave({
+      fields: ["idea-edit-title", "idea-edit-tags"], editors: ["idea-edit-text"],
+      save: saveIdea, noteId: "idea-autosave",
+    });
     document.querySelectorAll("[data-unlink]").forEach(el => {
-      el.addEventListener("click", () => { links = links.filter(l => l !== el.dataset.unlink); el.parentElement.remove(); });
+      el.addEventListener("click", () => {
+        links = links.filter(l => l !== el.dataset.unlink);
+        el.parentElement.remove();
+        auto.saveNow();
+      });
     });
     document.getElementById("idea-link-select").addEventListener("change", (e) => {
       const val = e.target.value;
       if (val && !links.includes(val)) links.push(val);
       e.target.value = "";
+      auto.saveNow();
     });
-    document.getElementById("idea-cancel").onclick = () => { links = idea.links.slice(); editing = false; renderView(); };
-    document.getElementById("idea-save").onclick = async () => {
-      const title = document.getElementById("idea-edit-title").value.trim();
-      const text = markdownValue("idea-edit-text").trim();
-      const tags = document.getElementById("idea-edit-tags").value.split(",").map(s => s.trim()).filter(Boolean);
-      const updated = await API.put(`/api/ideas/${idea.id}`, { title, text, tags, links });
-      Object.assign(idea, updated);
-      const i = state.ideas.findIndex(x => x.id === idea.id);
-      state.ideas[i] = idea;
-      renderIdeas();
+    document.getElementById("idea-done").onclick = async () => {
+      flushAutosave();
+      await saveIdea();
       editing = false;
       renderView();
     };
@@ -2266,18 +2399,43 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
     <label>Body</label>
     ${markdownEditorHtml("nm-body", "", { compact: true })}
     <div class="modal-actions">
+      <div id="nm-autosave" class="autosave-note"></div>
       <div class="spacer"></div>
       <button class="secondary-btn" id="nm-cancel">Cancel</button>
       <button class="primary-btn" id="nm-save">Create</button>
     </div>
   `, { large: true });
-  wireMarkdownEditor("nm-body");
-  document.getElementById("nm-cancel").onclick = closeModal;
+  // Nothing exists to write back to yet, so what is typed is kept as a draft
+  // and put back if the dialog is reopened. Clicking away keeps it; only
+  // Cancel throws it out, because the stray click is the accident this is
+  // here to survive.
+  const draftKey = `memo:${state.currentProject.slug}`;
+  const draft = loadDraft(draftKey);
+  if (draftHasContent(draft)) {
+    document.getElementById("nm-title").value = draft.title || "";
+    document.getElementById("nm-synopsis").value = draft.synopsis || "";
+    mdEditorsSetValue("nm-body", draft.body || "");
+    document.getElementById("nm-autosave").textContent = "Unfinished draft restored";
+  }
+  attachAutosave({
+    fields: ["nm-title", "nm-synopsis"], editors: ["nm-body"], noteId: "nm-autosave",
+    save: async () => saveDraft(draftKey, {
+      title: document.getElementById("nm-title").value,
+      synopsis: document.getElementById("nm-synopsis").value,
+      body: markdownValue("nm-body"),
+    }),
+  });
+  document.getElementById("nm-cancel").onclick = () => {
+    cancelPendingAutosave();
+    clearDraft(draftKey);
+    closeModal();
+  };
   document.getElementById("nm-save").onclick = async () => {
     const title = document.getElementById("nm-title").value.trim() || "Untitled";
     const synopsis = document.getElementById("nm-synopsis").value.trim();
     const body = markdownValue("nm-body");
     const memo = await API.post(`/api/projects/${state.currentProject.slug}/memos`, { title, synopsis, body });
+    clearDraft(draftKey);
     state.currentProject.memos.push(memo);
     const idx = state.projects.findIndex(x => x.slug === state.currentProject.slug);
     if (idx >= 0) state.projects[idx].memoCount = (state.projects[idx].memoCount || 0) + 1;
@@ -2318,22 +2476,31 @@ async function openMemoModal(id) {
       ${markdownEditorHtml("mm-body", memo.body)}
       <div class="modal-actions">
         <button class="danger-btn" id="mm-delete">Delete</button>
+        <div id="mm-autosave" class="autosave-note"></div>
         <div class="spacer"></div>
-        <button class="secondary-btn" id="mm-cancel">Cancel</button>
-        <button class="primary-btn" id="mm-save">Save</button>
+        <button class="primary-btn" id="mm-done">Done</button>
       </div>
     `, { large: true });
-    wireMarkdownEditor("mm-body");
-    document.getElementById("mm-cancel").onclick = () => { editing = false; renderView(); };
-    document.getElementById("mm-save").onclick = async () => {
+
+    // The memo already exists, so there is nothing to "cancel" into — it is
+    // written back as you type, and Done just stops editing.
+    const saveMemo = async () => {
       const title = document.getElementById("mm-title").value.trim() || "Untitled";
       const synopsis = document.getElementById("mm-synopsis").value.trim();
       const body = markdownValue("mm-body");
-      const updated = await API.put(`/api/projects/${projectSlug}/memos/${id}`, { title, synopsis, body });
-      memo = updated;
+      if (title === memo.title && synopsis === memo.synopsis && body === memo.body) return;
+      memo = await API.put(`/api/projects/${projectSlug}/memos/${id}`, { title, synopsis, body });
       const idx = state.currentProject.memos.findIndex(m => m.id === id);
-      state.currentProject.memos[idx] = memo;
+      if (idx >= 0) state.currentProject.memos[idx] = memo;
       renderMemoGrid();
+    };
+    attachAutosave({
+      fields: ["mm-title", "mm-synopsis"], editors: ["mm-body"],
+      save: saveMemo, noteId: "mm-autosave",
+    });
+    document.getElementById("mm-done").onclick = async () => {
+      flushAutosave();
+      await saveMemo();
       editing = false;
       renderView();
     };
@@ -3356,7 +3523,25 @@ async function refreshSyncInBackground() {
   await loadExternalEvents();
 }
 
-wireMarkdownEditor("idea-input");
+// The board's composer is not a dialog, but the words in it are just as easy
+// to lose — to a reload, or to wandering off to another tab. Same draft.
+const IDEA_DRAFT_KEY = "idea:new";
+{
+  const restore = loadDraft(IDEA_DRAFT_KEY);
+  if (draftHasContent(restore)) {
+    document.getElementById("idea-title-input").value = restore.title || "";
+    document.getElementById("idea-tags-input").value = restore.tags || "";
+    mdEditorsSetValue("idea-input", restore.text || "");
+  }
+  const keep = () => saveDraft(IDEA_DRAFT_KEY, {
+    title: document.getElementById("idea-title-input").value,
+    tags: document.getElementById("idea-tags-input").value,
+    text: markdownValue("idea-input"),
+  });
+  wireMarkdownEditor("idea-input", keep);
+  ["idea-title-input", "idea-tags-input"].forEach(id =>
+    document.getElementById(id).addEventListener("input", keep));
+}
 
 // ---------------------------------------------------------------- liveness
 // In a browser you reload to catch up; in the app there is no reflex for

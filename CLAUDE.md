@@ -227,6 +227,20 @@ stranded for good.
   pull from iCloud still lists it, and it was only hidden because a local record
   claimed its uid — remove the record alone and the block reappears in another
   colour, which reads as the delete having failed.
+- **Nothing typed is lost to a stray click.** Memos and ideas that already
+  exist autosave as you type, so their dialogs have a Done button and no
+  Cancel — with autosave there is nothing coherent for Cancel to mean. Things
+  not yet created (the New memo dialog, the idea composer) keep a draft in
+  `localStorage` and put it back when reopened. Two rules do the work:
+  `closeModal()` flushes a save that is still counting down, and **clicking
+  outside keeps the draft while only Cancel discards it** — the stray click is
+  the accident being guarded against, so it must not be the gesture that
+  throws work away.
+- **`mdEditors` can hold a handle to a node that is no longer in the document.**
+  Dialogs are rebuilt from scratch each time they open, so reading or writing
+  through a stale handle silently does nothing — that is how a restored draft
+  came back with its title but not its body. Go through `liveEditor()`, which
+  checks `isConnected` and drops what is dead.
 - **Markdown renders live, in the editing surface** (`attachLiveMarkdown()`).
   Memos, ideas and the recap columns are `contenteditable`, not `<textarea>` —
   a textarea cannot show styled text. **The element's text content is always

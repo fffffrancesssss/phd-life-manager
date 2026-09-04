@@ -565,6 +565,14 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
 .modal textarea { resize: vertical; }
 .modal-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 24px; }
 .modal-actions .spacer { flex: 1; }
+/* Autosave should be findable but never the loudest thing in the dialog. */
+.autosave-note {
+  font-size: 11.5px; color: var(--ink-3);
+  padding-left: 4px; min-height: 1em;
+  transition: color var(--ease);
+}
+.autosave-note.done  { color: var(--success); }
+.autosave-note.error { color: var(--danger); }
 .field-row { display: flex; gap: 12px; }
 .field-row > div { flex: 1; }
 
