@@ -148,6 +148,18 @@ stranded for good.
    no way to reach the live API without an account and a browser round trip, so
    the stub is where regressions get caught. Run it after touching any of this.
 
+## Focus time is summed by task name
+
+`summarize_sessions()` groups by the session's *label*, not by what it was
+linked to. The same piece of work gets blocked out several times in a week —
+different calendar blocks, sometimes different to-dos — and reading that back
+as four separate twenty-minute rows hides that it was an afternoon's work.
+Names match exactly, give or take surrounding whitespace, so two genuinely
+different tasks never merge.
+
+Both readers of it benefit: "where the hours went" in the weekly recap (top
+three) and the by-task list in the Focus summary (all of them).
+
 ## Data model
 
 - **Local events** (`calendar.json`) are the app's own blocks. They carry

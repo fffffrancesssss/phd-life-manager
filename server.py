@@ -1569,19 +1569,24 @@ def local_date_of(iso_str):
 
 
 def summarize_sessions(sessions):
+    """Total time, and time per task, longest first.
+
+    Grouped by the task's *name*, not by what each session was linked to. The
+    same piece of work usually gets blocked out several times in a week — on
+    different calendar blocks, sometimes on different to-dos — and reading
+    that back as four separate twenty-minute rows hides that it was really an
+    afternoon's work. Names are compared exactly, give or take surrounding
+    whitespace, so two genuinely different tasks are never merged.
+    """
     total = sum(session_duration_seconds(s) for s in sessions)
     groups = {}
     for s in sessions:
-        key = f"{s.get('linkType')}:{s.get('linkId')}"
-        if key not in groups:
-            groups[key] = {
-                "linkType": s.get("linkType"),
-                "linkId": s.get("linkId"),
-                "linkLabel": s.get("linkLabel") or "Unlinked",
-                "seconds": 0,
-            }
-        groups[key]["seconds"] += session_duration_seconds(s)
-    return total, sorted(groups.values(), key=lambda g: -g["seconds"])
+        label = (s.get("linkLabel") or "").strip() or "Unlinked"
+        group = groups.setdefault(label, {"linkLabel": label, "seconds": 0, "sessionCount": 0})
+        group["seconds"] += session_duration_seconds(s)
+        group["sessionCount"] += 1
+    # Ties break on the name, so equal totals do not reshuffle between loads.
+    return total, sorted(groups.values(), key=lambda g: (-g["seconds"], g["linkLabel"]))
 
 
 # ------------------------------------------------------------------ journal
