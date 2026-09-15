@@ -10,6 +10,7 @@ Data layout:
   data/ideas.txt                - all scattered research ideas, one text file
   data/projects/<slug>/project.json      - project title + basic info
   data/projects/<slug>/memos/<id>.txt    - one memo per file (plain text)
+  data/projects/<slug>/memos/<folder>/   - memos filed into a folder
 """
 
 import base64
@@ -1515,6 +1516,110 @@ def write_memo_file(path, title, synopsis, created, body):
         f.write(body)
 
 
+# ------------------------------------------------------------ memo folders
+# A folder is a real directory under a project's memos/, and nothing else.
+# There is no registry of folders anywhere, because the filesystem is the
+# record: a folder made or renamed in Finder is one the app shows, and a
+# memo is in whichever directory its file sits in. Storing the folder in
+# project.json as well would give two answers to the same question, and the
+# one on disk is the one the user can see.
+#
+# One level deep. A memo is either loose in the project or in one of its
+# folders, which is what a drag onto a folder can express.
+#
+# Memo ids are unique within a project, so a memo's address is its id alone
+# and never includes its folder. Moving one is a rename on disk; nothing
+# already holding that id — an open dialog, a queued save — has to be told.
+
+MEMO_FOLDER_MAX = 60
+MEMO_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def project_memos_dir(slug):
+    return os.path.join(PROJECTS_DIR, slug, "memos")
+
+
+def memo_folders(slug):
+    root = project_memos_dir(slug)
+    if not os.path.isdir(root):
+        return []
+    return sorted(
+        (n for n in os.listdir(root)
+         if not n.startswith(".") and os.path.isdir(os.path.join(root, n))),
+        key=str.lower,
+    )
+
+
+def clean_folder_name(name):
+    """A typed name made safe to be a directory name, or "" if it cannot be.
+
+    Separators are replaced rather than dropped, so two words never silently
+    run together. A leading dot goes because a folder the app lists and
+    Finder hides is a folder the user has lost.
+    """
+    name = "".join(ch for ch in (name or "") if ch >= " " and ch != "\x7f")
+    name = name.replace("/", "-").replace("\\", "-").replace(":", "-")
+    return name.strip().lstrip(".").strip()[:MEMO_FOLDER_MAX].strip()
+
+
+def folder_dir(slug, folder):
+    """Where a folder's memos live; None if the project has no such folder.
+
+    Matching against the directories actually sitting there, rather than
+    parsing the name, is what keeps a crafted ".." out — a name that is not
+    one of them is simply not a folder.
+    """
+    folder = (folder or "").strip()
+    if not folder:
+        return project_memos_dir(slug)
+    if folder not in memo_folders(slug):
+        return None
+    return os.path.join(project_memos_dir(slug), folder)
+
+
+def memo_folder_of(slug, path):
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent == os.path.abspath(project_memos_dir(slug)):
+        return ""
+    return os.path.basename(parent)
+
+
+def memo_summary(path, folder):
+    meta, _ = parse_memo_file(path)
+    return {
+        "id": os.path.basename(path)[:-4],
+        "title": meta.get("title", "Untitled"),
+        "synopsis": meta.get("synopsis", ""),
+        "created": meta.get("created", ""),
+        "folder": folder,
+    }
+
+
+def list_memos(slug):
+    """Every memo in the project, each carrying the folder it sits in."""
+    root = project_memos_dir(slug)
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for folder in [""] + memo_folders(slug):
+        for fname in sorted(os.listdir(os.path.join(root, folder))):
+            if fname.endswith(".txt"):
+                out.append(memo_summary(os.path.join(root, folder, fname), folder))
+    return out
+
+
+def find_memo_path(slug, memo_id):
+    """A memo is addressed by id alone, so look wherever it might sit."""
+    if not MEMO_ID_RE.fullmatch(memo_id or ""):
+        return None
+    root = project_memos_dir(slug)
+    for folder in [""] + memo_folders(slug):
+        path = os.path.join(root, folder, f"{memo_id}.txt")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 # ------------------------------------------------------------- focus timer
 # One toggle: press to start a phone-free focus session linked to a
 # calendar item or to-do, press again to stop it. Sessions are logged so a
@@ -1806,20 +1911,12 @@ def week_evidence(monday):
     memos = 0
     if os.path.isdir(PROJECTS_DIR):
         for slug in os.listdir(PROJECTS_DIR):
-            mdir = os.path.join(PROJECTS_DIR, slug, "memos")
-            if not os.path.isdir(mdir):
-                continue
-            for fname in os.listdir(mdir):
-                if not fname.endswith(".txt"):
-                    continue
-                meta, _ = parse_memo_file(os.path.join(mdir, fname))
-                created = meta.get("created")
-                if created:
-                    try:
-                        if start <= datetime.datetime.fromisoformat(created) < end:
-                            memos += 1
-                    except ValueError:
-                        pass
+            for m in list_memos(slug):
+                try:
+                    if m["created"] and start <= datetime.datetime.fromisoformat(m["created"]) < end:
+                        memos += 1
+                except ValueError:
+                    pass
 
     return {
         "focusSeconds": total,
@@ -2845,11 +2942,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         meta_path = os.path.join(pdir, "project.json")
                         if os.path.isfile(meta_path):
                             meta = load_json(meta_path)
-                            memos_dir = os.path.join(pdir, "memos")
-                            count = 0
-                            if os.path.isdir(memos_dir):
-                                count = len([f for f in os.listdir(memos_dir) if f.endswith(".txt")])
-                            meta["memoCount"] = count
+                            meta["memoCount"] = len(list_memos(slug))
                             result.append(meta)
                 self._send_json(result)
             elif method == "POST":
@@ -2879,19 +2972,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ApiError("project not found", 404)
             if method == "GET":
                 meta = load_json(meta_path)
-                memos_dir = os.path.join(pdir, "memos")
-                memos = []
-                if os.path.isdir(memos_dir):
-                    for fname in sorted(os.listdir(memos_dir)):
-                        if fname.endswith(".txt"):
-                            meta2, _ = parse_memo_file(os.path.join(memos_dir, fname))
-                            memos.append({
-                                "id": fname[:-4],
-                                "title": meta2.get("title", "Untitled"),
-                                "synopsis": meta2.get("synopsis", ""),
-                                "created": meta2.get("created", ""),
-                            })
-                meta["memos"] = memos
+                meta["memos"] = list_memos(slug)
+                meta["folders"] = memo_folders(slug)
                 self._send_json(meta)
             elif method == "PUT":
                 body = self._read_json_body()
@@ -2916,23 +2998,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ApiError("method not allowed", 405)
             return
 
+        if len(parts) == 4 and parts[3] == "folders":
+            if not os.path.isdir(pdir):
+                raise ApiError("project not found", 404)
+            root = project_memos_dir(slug)
+            if method == "GET":
+                self._send_json(memo_folders(slug))
+                return
+            # The name travels in the body, not the path: folder names are
+            # spaces and Chinese as often as not, and path segments are not
+            # URL-decoded here.
+            body = self._read_json_body()
+            name = clean_folder_name(body.get("name"))
+            if not name:
+                raise ApiError("folder name required", 400)
+            taken = {f.lower() for f in memo_folders(slug)}
+            if method == "POST":
+                if name.lower() in taken:
+                    raise ApiError("there is already a folder with that name", 409)
+                os.makedirs(os.path.join(root, name), exist_ok=True)
+                self._send_json({"name": name}, 201)
+            elif method == "PUT":
+                src_dir = folder_dir(slug, name)
+                if src_dir is None or src_dir == root:
+                    raise ApiError("folder not found", 404)
+                new_name = clean_folder_name(body.get("newName"))
+                if not new_name:
+                    raise ApiError("folder name required", 400)
+                if new_name.lower() != name.lower() and new_name.lower() in taken:
+                    raise ApiError("there is already a folder with that name", 409)
+                os.rename(src_dir, os.path.join(root, new_name))
+                self._send_json({"name": new_name})
+            elif method == "DELETE":
+                src_dir = folder_dir(slug, name)
+                if src_dir is None or src_dir == root:
+                    raise ApiError("folder not found", 404)
+                # The memos come back out to the project. Deleting a folder
+                # is a tidying gesture, and no tidying gesture should be
+                # able to throw away something that was written.
+                for fname in os.listdir(src_dir):
+                    dest = os.path.join(root, fname)
+                    if not os.path.exists(dest):
+                        os.rename(os.path.join(src_dir, fname), dest)
+                if os.listdir(src_dir):
+                    raise ApiError("something is left in that folder", 409)
+                os.rmdir(src_dir)
+                self._send_json({"ok": True})
+            else:
+                raise ApiError("method not allowed", 405)
+            return
+
         if len(parts) == 4 and parts[3] == "memos":
             if not os.path.isdir(pdir):
                 raise ApiError("project not found", 404)
             memos_dir = os.path.join(pdir, "memos")
             os.makedirs(memos_dir, exist_ok=True)
             if method == "GET":
-                memos = []
-                for fname in sorted(os.listdir(memos_dir)):
-                    if fname.endswith(".txt"):
-                        meta2, _ = parse_memo_file(os.path.join(memos_dir, fname))
-                        memos.append({
-                            "id": fname[:-4],
-                            "title": meta2.get("title", "Untitled"),
-                            "synopsis": meta2.get("synopsis", ""),
-                            "created": meta2.get("created", ""),
-                        })
-                self._send_json(memos)
+                self._send_json(list_memos(slug))
             elif method == "POST":
                 body = self._read_json_body()
                 title = (body.get("title") or "Untitled").strip() or "Untitled"
@@ -2940,19 +3062,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 synopsis = (body.get("synopsis") or "").strip()
                 if not synopsis:
                     synopsis = memo_body.replace("\n", " ")[:140]
+                folder = (body.get("folder") or "").strip()
+                dest_dir = folder_dir(slug, folder)
+                if dest_dir is None:
+                    raise ApiError("folder not found", 404)
                 memo_id = new_id("memo")
                 created = now_iso()
-                write_memo_file(os.path.join(memos_dir, f"{memo_id}.txt"), title, synopsis, created, memo_body)
-                self._send_json({"id": memo_id, "title": title, "synopsis": synopsis, "created": created, "body": memo_body}, 201)
+                write_memo_file(os.path.join(dest_dir, f"{memo_id}.txt"), title, synopsis, created, memo_body)
+                self._send_json({"id": memo_id, "title": title, "synopsis": synopsis,
+                                 "created": created, "body": memo_body, "folder": folder}, 201)
             else:
                 raise ApiError("method not allowed", 405)
             return
 
         if len(parts) == 5 and parts[3] == "memos":
             memo_id = parts[4]
-            mpath = os.path.join(pdir, "memos", f"{memo_id}.txt")
+            mpath = find_memo_path(slug, memo_id)
             if method == "GET":
-                if not os.path.isfile(mpath):
+                if not mpath:
                     raise ApiError("memo not found", 404)
                 meta2, body = parse_memo_file(mpath)
                 self._send_json({
@@ -2961,20 +3088,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "synopsis": meta2.get("synopsis", ""),
                     "created": meta2.get("created", ""),
                     "body": body,
+                    "folder": memo_folder_of(slug, mpath),
                 })
             elif method == "PUT":
-                if not os.path.isfile(mpath):
+                if not mpath:
                     raise ApiError("memo not found", 404)
                 meta2, body = parse_memo_file(mpath)
                 req = self._read_json_body()
+                # Moving is a rename, so it happens before the write and the
+                # write lands in the new place. A move that fails leaves the
+                # memo where it was with its text untouched.
+                if "folder" in req:
+                    dest_dir = folder_dir(slug, req.get("folder"))
+                    if dest_dir is None:
+                        raise ApiError("folder not found", 404)
+                    dest = os.path.join(dest_dir, f"{memo_id}.txt")
+                    if os.path.abspath(dest) != os.path.abspath(mpath):
+                        os.rename(mpath, dest)
+                        mpath = dest
                 title = req.get("title", meta2.get("title", "Untitled"))
                 synopsis = req.get("synopsis", meta2.get("synopsis", ""))
                 new_body = req.get("body", body)
                 created = meta2.get("created", now_iso())
                 write_memo_file(mpath, title, synopsis, created, new_body)
-                self._send_json({"id": memo_id, "title": title, "synopsis": synopsis, "created": created, "body": new_body})
+                self._send_json({"id": memo_id, "title": title, "synopsis": synopsis,
+                                 "created": created, "body": new_body,
+                                 "folder": memo_folder_of(slug, mpath)})
             elif method == "DELETE":
-                if os.path.isfile(mpath):
+                if mpath:
                     os.remove(mpath)
                 self._send_json({"ok": True})
             else:

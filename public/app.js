@@ -665,7 +665,12 @@ const API = {
   get: (p) => fetch(p).then(handleApiResponse),
   post: (p, b) => fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then(handleApiResponse),
   put: (p, b) => fetch(p, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then(handleApiResponse),
-  del: (p) => fetch(p, { method: "DELETE" }).then(handleApiResponse),
+  // A body on DELETE, because folder names are spaces and Chinese as often
+  // as not and path segments would have to be encoded to carry one.
+  del: (p, b) => fetch(p, b === undefined
+    ? { method: "DELETE" }
+    : { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }
+  ).then(handleApiResponse),
 };
 
 const state = {
@@ -673,6 +678,9 @@ const state = {
   ideaTagFilter: "",
   weekStart: startOfWeek(new Date()),
   currentProject: null,
+  // Which memo folder of the open project is being looked at; "" is the
+  // project itself.
+  memoFolder: "",
   // One calendar service at a time: "none", "icloud" or "google". A block
   // lives on exactly one calendar, so letting two services both claim to be
   // that calendar would duplicate events and leave the reconciler with no
@@ -2358,6 +2366,7 @@ document.getElementById("new-project-btn").addEventListener("click", () => {
 async function openProjectDetail(slug) {
   const data = await API.get(`/api/projects/${slug}`);
   state.currentProject = data;
+  state.memoFolder = "";
   document.getElementById("projects-list-view").classList.add("hidden");
   document.getElementById("project-detail-view").classList.remove("hidden");
   renderProjectDetailHeader();
@@ -2439,25 +2448,242 @@ function openEditProjectModal() {
   };
 }
 
-function renderMemoGrid() {
-  const grid = document.getElementById("memo-grid");
-  if (!state.currentProject) return;
-  grid.innerHTML = "";
-  const memos = (state.currentProject.memos || []).slice().sort((a, b) => new Date(b.created) - new Date(a.created));
-  if (memos.length === 0) { renderEmptyState(grid, "No memos yet — add one, or move an idea in."); return; }
-  memos
-    .forEach(m => {
-      const card = document.createElement("div");
-      card.className = "card";
-      card.innerHTML = `
-        <div class="card-title">${escapeHtml(m.title)}</div>
-        <div class="card-preview">${escapeHtml(m.synopsis)}</div>
-        <div class="card-footer">${fmtShort(new Date(m.created))}</div>
-      `;
-      card.addEventListener("click", () => openMemoModal(m.id));
-      grid.appendChild(card);
-    });
+// -------------------------------------------------- memos and their folders
+// A folder is a real directory under the project's memos/, so what the app
+// shows is what a Finder window shows, and a folder made or renamed there
+// turns up here with its memos intact. One level deep: a memo is either
+// loose in the project or in one of its folders, which is exactly as much
+// as a drag onto a folder can say.
+//
+// Moving is a file rename, so it is quick — but the grid still repaints in
+// the same frame and rolls back with a toast if the write is refused. A
+// drag that visibly hesitates reads as a drag that did not take.
+
+let draggingMemoId = null;
+
+const FOLDER_ICON = `<svg width="17" height="17" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+  <path d="M2.6 5.6A1.6 1.6 0 0 1 4.2 4h3.2c.42 0 .82.17 1.12.46l1.04 1.04h6.24A1.6 1.6 0 0 1 17.4 7.1v7.3a1.6 1.6 0 0 1-1.6 1.6H4.2a1.6 1.6 0 0 1-1.6-1.6V5.6Z"
+    stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+</svg>`;
+
+function memoFolders() {
+  return (state.currentProject && state.currentProject.folders) || [];
 }
+
+function byFolderName(a, b) {
+  return a.toLowerCase().localeCompare(b.toLowerCase());
+}
+
+function currentMemoFolder() {
+  // A folder can go out from under us — renamed in Finder, deleted in
+  // another window — and being parked inside one that no longer exists
+  // would show an empty grid with nothing in it to get back out with.
+  const here = state.memoFolder || "";
+  return here && memoFolders().includes(here) ? here : "";
+}
+
+function openMemoFolder(name) {
+  state.memoFolder = name || "";
+  renderMemoGrid();
+}
+
+function makeMemoDropTarget(el, folder) {
+  el.addEventListener("dragover", e => {
+    if (draggingMemoId === null) return;   // to-dos are draggable too
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    el.classList.add("drop-target");
+  });
+  // Moving onto a child counts as leaving the card otherwise, and the
+  // highlight flickers for the whole hover.
+  el.addEventListener("dragleave", e => {
+    if (!el.contains(e.relatedTarget)) el.classList.remove("drop-target");
+  });
+  el.addEventListener("drop", e => {
+    el.classList.remove("drop-target");
+    if (draggingMemoId === null) return;
+    e.preventDefault();
+    moveMemoToFolder(draggingMemoId, folder);
+  });
+}
+
+async function moveMemoToFolder(memoId, folder) {
+  const p = state.currentProject;
+  if (!p) return;
+  const memo = (p.memos || []).find(m => m.id === memoId);
+  if (!memo || (memo.folder || "") === folder) return;
+  const from = memo.folder || "";
+  memo.folder = folder;
+  renderMemoGrid();
+  try {
+    await API.put(`/api/projects/${p.slug}/memos/${memoId}`, { folder });
+  } catch (err) {
+    memo.folder = from;
+    renderMemoGrid();
+    showToast("Couldn't move that memo: " + err.message, "error");
+  }
+}
+
+function renderMemoGrid() {
+  if (!state.currentProject) return;
+  const p = state.currentProject;
+  const here = currentMemoFolder();
+  state.memoFolder = here;
+  const memos = (p.memos || []).slice().sort((a, b) => new Date(b.created) - new Date(a.created));
+
+  renderMemoCrumbs(here);
+
+  const grid = document.getElementById("memo-grid");
+  grid.innerHTML = "";
+  if (!here) memoFolders().forEach(name => grid.appendChild(buildFolderCard(name, memos)));
+
+  const shown = memos.filter(m => (m.folder || "") === here);
+  if (shown.length === 0) {
+    if (here) renderEmptyState(grid, "Nothing filed here yet — drag memos onto this folder from the project, or add one while you are in it.");
+    else if (memoFolders().length === 0) renderEmptyState(grid, "No memos yet — add one, or move an idea in.");
+  }
+  shown.forEach(m => grid.appendChild(buildMemoCard(m)));
+}
+
+function buildFolderCard(name, memos) {
+  const count = memos.filter(m => (m.folder || "") === name).length;
+  const card = document.createElement("div");
+  card.className = "card folder-card";
+  card.innerHTML = `
+    <div class="folder-row">${FOLDER_ICON}<div class="card-title">${escapeHtml(name)}</div></div>
+    <div class="card-footer">${count} memo${count === 1 ? "" : "s"}</div>
+  `;
+  card.addEventListener("click", () => openMemoFolder(name));
+  makeMemoDropTarget(card, name);
+  return card;
+}
+
+function buildMemoCard(m) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.draggable = true;
+  card.innerHTML = `
+    <div class="card-title">${escapeHtml(m.title)}</div>
+    <div class="card-preview">${escapeHtml(m.synopsis)}</div>
+    <div class="card-footer">${fmtShort(new Date(m.created))}</div>
+  `;
+  card.addEventListener("dragstart", e => {
+    draggingMemoId = m.id;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", m.id);
+    card.classList.add("dragging");
+  });
+  card.addEventListener("dragend", () => {
+    draggingMemoId = null;
+    card.classList.remove("dragging");
+    // A drop outside any target leaves the last highlight painted.
+    document.querySelectorAll(".drop-target").forEach(el => el.classList.remove("drop-target"));
+  });
+  card.addEventListener("click", () => openMemoModal(m.id));
+  return card;
+}
+
+function renderMemoCrumbs(here) {
+  const bar = document.getElementById("memo-crumbs");
+  bar.innerHTML = "";
+  if (!here) return;
+
+  const root = document.createElement("button");
+  root.className = "link-btn crumb-root";
+  root.textContent = "← All memos";
+  root.addEventListener("click", () => openMemoFolder(""));
+  // Dragging onto the way back out is how a memo leaves a folder.
+  makeMemoDropTarget(root, "");
+  bar.appendChild(root);
+
+  const sep = document.createElement("span");
+  sep.className = "crumb-sep";
+  sep.textContent = "/";
+  bar.appendChild(sep);
+
+  const label = document.createElement("span");
+  label.className = "crumb-here";
+  label.textContent = here;
+  bar.appendChild(label);
+
+  const spacer = document.createElement("div");
+  spacer.className = "spacer";
+  bar.appendChild(spacer);
+
+  const rename = document.createElement("button");
+  rename.className = "secondary-btn";
+  rename.textContent = "Rename";
+  rename.addEventListener("click", () => openFolderModal(here));
+  bar.appendChild(rename);
+
+  const del = document.createElement("button");
+  del.className = "danger-btn";
+  del.textContent = "Delete folder";
+  del.addEventListener("click", () => deleteMemoFolder(here));
+  bar.appendChild(del);
+}
+
+function openFolderModal(existing = null) {
+  openModal(`
+    <h3>${existing ? "Rename folder" : "New folder"}</h3>
+    <label>Name</label><input type="text" id="mf-name" value="${escapeAttr(existing || "")}" />
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="secondary-btn" id="mf-cancel">Cancel</button>
+      <button class="primary-btn" id="mf-save">${existing ? "Rename" : "Create"}</button>
+    </div>
+  `);
+  const input = document.getElementById("mf-name");
+  input.focus();
+  input.select();
+  const submit = async () => {
+    const name = input.value.trim();
+    if (!name) { alert("Name required."); return; }
+    const p = state.currentProject;
+    try {
+      if (existing) {
+        const res = await API.put(`/api/projects/${p.slug}/folders`, { name: existing, newName: name });
+        p.folders = memoFolders().map(f => (f === existing ? res.name : f)).sort(byFolderName);
+        (p.memos || []).forEach(m => { if ((m.folder || "") === existing) m.folder = res.name; });
+        if (state.memoFolder === existing) state.memoFolder = res.name;
+      } else {
+        const res = await API.post(`/api/projects/${p.slug}/folders`, { name });
+        if (!memoFolders().includes(res.name)) p.folders = memoFolders().concat(res.name).sort(byFolderName);
+      }
+    } catch (err) {
+      alert(err.message);
+      return;
+    }
+    renderMemoGrid();
+    closeModal();
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  document.getElementById("mf-cancel").onclick = closeModal;
+  document.getElementById("mf-save").onclick = submit;
+}
+
+async function deleteMemoFolder(name) {
+  const p = state.currentProject;
+  const count = (p.memos || []).filter(m => (m.folder || "") === name).length;
+  // Deleting a folder is a tidying gesture, so it never takes writing with
+  // it — say where the memos end up rather than asking for a leap of faith.
+  const question = count
+    ? `Delete the folder "${name}"? Its ${count} memo${count === 1 ? " moves" : "s move"} back into the project — nothing is deleted.`
+    : `Delete the folder "${name}"?`;
+  if (!confirm(question)) return;
+  try {
+    await API.del(`/api/projects/${p.slug}/folders`, { name });
+  } catch (err) {
+    showToast("Couldn't delete that folder: " + err.message, "error");
+    return;
+  }
+  p.folders = memoFolders().filter(f => f !== name);
+  (p.memos || []).forEach(m => { if ((m.folder || "") === name) m.folder = ""; });
+  if (state.memoFolder === name) state.memoFolder = "";
+  renderMemoGrid();
+}
+
+document.getElementById("new-folder-btn").addEventListener("click", () => openFolderModal());
 
 document.getElementById("new-memo-btn").addEventListener("click", () => {
   openModal(`
@@ -2502,7 +2728,8 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
     const title = document.getElementById("nm-title").value.trim() || "Untitled";
     const synopsis = document.getElementById("nm-synopsis").value.trim();
     const body = markdownValue("nm-body");
-    const memo = await API.post(`/api/projects/${state.currentProject.slug}/memos`, { title, synopsis, body });
+    const memo = await API.post(`/api/projects/${state.currentProject.slug}/memos`,
+                                { title, synopsis, body, folder: currentMemoFolder() });
     clearDraft(draftKey);
     state.currentProject.memos.push(memo);
     const idx = state.projects.findIndex(x => x.slug === state.currentProject.slug);

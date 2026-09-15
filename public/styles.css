@@ -474,6 +474,49 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
 /* Leave room for the star so long titles don't run under it. */
 .card .card-title { padding-right: 24px; }
 
+/* ---------- memo folders -----------------------------------------------
+   A folder is a drop target first and a card second. It has to read as a
+   different kind of thing from the memos beside it, and it does that on the
+   neutral surface alone — the accent is held back for the one job it has
+   here, which is saying where a dragged memo will land.
+
+   Measured, like the rest: the count sits at --ink-2 rather than --ink-3
+   because --ink-3 on the accent's soft tint comes out at 4.44:1, and the
+   card wears that tint the moment something is dragged over it.           */
+
+.panel-header-actions { display: flex; align-items: center; gap: 8px; }
+
+.memo-crumbs { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.memo-crumbs:empty { display: none; }
+.memo-crumbs .spacer { flex: 1; }
+.crumb-sep { color: var(--ink-3); font-size: 13px; }
+.crumb-here {
+  font-family: var(--font-serif); font-weight: 600; font-size: 15px;
+  letter-spacing: -0.01em;
+}
+.crumb-root {
+  margin-bottom: 0; padding: 5px 10px;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  transition: background var(--ease), border-color var(--ease), opacity var(--ease);
+}
+
+.folder-card { background: var(--surface-2); border-color: var(--line); }
+.folder-card .folder-row { display: flex; align-items: center; gap: 9px; }
+.folder-card .folder-row svg { flex: none; color: var(--accent-strong); }
+.folder-card .card-title { padding-right: 0; }
+.folder-card .card-footer { color: var(--ink-2); }
+
+/* The card being carried fades and the one under the cursor lights up, so
+   there is never a question about where the memo is about to go. */
+.card[draggable="true"] { cursor: grab; }
+.card.dragging { opacity: 0.4; }
+.drop-target, .drop-target:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  transform: none;
+  box-shadow: none;
+}
+
 .tag-chip {
   font-size: 10.5px; letter-spacing: 0.01em;
   background: var(--accent-soft); color: var(--accent-strong);

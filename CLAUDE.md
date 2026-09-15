@@ -39,7 +39,8 @@ it and the app just paints a beat later),
 `google_cache.json` (same idea as the iCloud one),
 `sync_config.json` (which service is selected), `ideas.txt` (all ideas, one delimited
 file),
-`projects/<slug>/project.json` + `memos/<id>.txt`,
+`projects/<slug>/project.json` + `memos/<id>.txt` (+ `memos/<folder>/<id>.txt`
+for a memo filed into a folder),
 `journal/weekly/<monday>.txt` and `journal/daily/<date>.txt`.
 
 ## iCloud CalDAV — the hard-won parts
@@ -160,6 +161,36 @@ different tasks never merge.
 Both readers of it benefit: "where the hours went" in the weekly recap (top
 three) and the by-task list in the Focus summary (all of them).
 
+## Memo folders are directories, and nothing else
+
+A folder under a project is a real directory in `memos/`, recorded nowhere
+else. The filesystem is the model: a folder made or renamed in Finder is one
+the app shows, with its memos intact. Listing folders in `project.json` as
+well would give two answers to the same question, and the one on disk is the
+one the user can see.
+
+One level deep. A memo is either loose in the project or in one of its
+folders, which is exactly as much as a drag onto a folder can say.
+
+1. **A memo's address is its id alone.** Ids are unique within a project, so
+   `/api/projects/<slug>/memos/<id>` finds the file wherever it sits
+   (`find_memo_path()`). Moving one is a rename, and nothing already holding
+   that id — an open dialog, a queued save — has to be told.
+
+2. **Folder names travel in the request body, never in the path.** Path
+   segments are not URL-decoded in `_dispatch()`, and these names are spaces
+   and Chinese as often as not. That is also why `API.del` takes a body.
+
+3. **Deleting a folder moves its memos back into the project.** It never
+   takes them with it, and it refuses rather than removing a directory
+   something is still left in. Tidying is not a gesture that should be able
+   to throw away what was written — the same rule as autosaved memos.
+
+4. **No folder name is validated by parsing it.** `folder_dir()` matches
+   against the directories actually sitting there, so a crafted `..` is
+   simply not one of them and resolves to nothing. `clean_folder_name()`
+   only has to make a *typed* name usable as a directory name.
+
 ## Data model
 
 - **Local events** (`calendar.json`) are the app's own blocks. They carry
@@ -235,6 +266,14 @@ three) and the by-task list in the Focus summary (all of them).
   for a moment, so writes queue behind its create and the real id is written
   into the same object every closure already holds; and a server response is
   only adopted wholesale when it is the last write for that block.
+- **Dragging a memo into a folder is optimistic**, like a calendar write:
+  the grid repaints in the same frame, and a move the server refuses rolls
+  back with a toast. Two details it depends on — the drop highlight is
+  cleared on `dragleave` only once the cursor has really left the card, or
+  crossing into a child flickers it for the whole hover; and `dragend`
+  sweeps up any highlight left painted by a drop that landed on nothing.
+  To-dos are draggable too, so a drop target checks `draggingMemoId` rather
+  than reading `dataTransfer`, which is unreadable during a drag anyway.
 - **Deleting a synced block also drops its copy in `externalEvents`.** The last
   pull from iCloud still lists it, and it was only hidden because a local record
   claimed its uid — remove the record alone and the block reappears in another
