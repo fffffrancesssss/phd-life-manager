@@ -1099,3 +1099,83 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
   font-family: var(--font-mono); font-size: 11.5px; color: var(--ink);
   overflow-wrap: anywhere;
 }
+
+/* ---------- memo desk ---------------------------------------------------
+   Memos open here rather than in a dialog, because the reason to open one
+   is usually another one. The desk fills the window and each pane scrolls
+   inside itself, so two memos can be read against each other without the
+   page itself moving.                                                     */
+
+.memo-desk {
+  display: flex; flex-direction: column; gap: 12px;
+  height: calc(100vh - 150px); min-height: 440px;
+}
+.desk-bar { display: flex; align-items: center; gap: 10px; flex: none; }
+.desk-bar .spacer { flex: 1; }
+.desk-bar .desk-back { margin-bottom: 0; }
+.desk-count { font-size: 11.5px; color: var(--ink-3); }
+
+.desk-panes { display: grid; grid-template-columns: 1fr; gap: 12px; flex: 1; min-height: 0; }
+.desk-panes.split { grid-template-columns: 1fr 1fr; }
+@media (max-width: 900px) { .desk-panes.split { grid-template-columns: 1fr; } }
+
+.desk-pane {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+}
+
+/* One row of tabs per pane: what is open on that side, and which of them is
+   in front. The row scrolls sideways rather than wrapping, so the sheet
+   below it never shifts down as more memos open. */
+.desk-tabs {
+  flex: none; display: flex; gap: 2px;
+  padding: 6px 6px 0; border-bottom: 1px solid var(--line-soft);
+  overflow-x: auto;
+}
+.desk-tab {
+  display: flex; align-items: center; flex: none;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  transition: background var(--ease);
+}
+.desk-tab:hover { background: var(--surface-2); }
+.desk-tab.active { background: var(--accent-soft); }
+.desk-tab-label {
+  border: none; background: none; cursor: pointer; font-family: inherit;
+  font-size: 12.5px; color: var(--ink-2);
+  padding: 8px 3px 8px 11px; max-width: 190px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.desk-tab.active .desk-tab-label { color: var(--accent-strong); font-weight: 600; }
+.desk-tab-x {
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-3); font-size: 15px; line-height: 1;
+  padding: 6px 9px 6px 3px;
+}
+.desk-tab-x:hover { color: var(--danger); }
+
+.desk-sheet { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 22px; }
+.desk-empty { padding: 26px 20px; color: var(--ink-3); font-size: 13px; line-height: 1.6; }
+.desk-foot {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-top: 1px solid var(--line-soft);
+}
+.desk-foot .spacer { flex: 1; }
+
+.desk-pick { display: flex; flex-direction: column; gap: 2px; max-height: 52vh; overflow-y: auto; }
+.desk-pick-row {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  width: 100%; text-align: left; font-family: inherit;
+  border: none; background: none; cursor: pointer;
+  padding: 10px 11px; border-radius: var(--r-sm);
+}
+.desk-pick-row:hover:not([disabled]) { background: var(--surface-2); }
+.desk-pick-row[disabled] { opacity: 0.45; cursor: default; }
+.desk-pick-title { font-size: 13.5px; color: var(--ink); }
+
+/* Reading mode on the desk. The editor surface shows markdown because its
+   text is the source; this one is the rendered result, for the side you are
+   quoting from rather than writing in. */
+.desk-view-title { margin: 0 0 6px; font-size: 19px; }
+.desk-view-syn { margin-bottom: 14px; }

@@ -739,37 +739,57 @@ function showToast(message, kind = "info") {
 //     gesture that discards.
 
 const AUTOSAVE_DELAY_MS = 700;
-let pendingAutosave = null;      // { timer, run } — at most one at a time
 
-function scheduleAutosave(run) {
-  if (pendingAutosave) clearTimeout(pendingAutosave.timer);
-  pendingAutosave = { run, timer: setTimeout(() => {
-    const job = pendingAutosave;
-    pendingAutosave = null;
+// One pending save per owner, not one for the page. A single slot was right
+// while only one dialog could be open at a time; two memo panes share the
+// page, and there the second pane's keystroke cleared the first pane's
+// countdown and the words waiting in it never reached disk.
+const pendingAutosaves = new Map();   // key -> { timer, run }
+let autosaveKeySeq = 0;
+
+function scheduleAutosave(run, key = "default") {
+  const existing = pendingAutosaves.get(key);
+  if (existing) clearTimeout(existing.timer);
+  pendingAutosaves.set(key, { run, timer: setTimeout(() => {
+    const job = pendingAutosaves.get(key);
+    pendingAutosaves.delete(key);
     if (job) job.run();
-  }, AUTOSAVE_DELAY_MS) };
+  }, AUTOSAVE_DELAY_MS) });
+}
+
+function pendingAutosaveKeys(key) {
+  return key === undefined ? [...pendingAutosaves.keys()] : [key];
 }
 
 // Cancel means "throw this away", so the countdown must not fire afterwards
-// and put it back.
-function cancelPendingAutosave() {
-  if (!pendingAutosave) return;
-  clearTimeout(pendingAutosave.timer);
-  pendingAutosave = null;
+// and put it back. Always cancel by key: a dialog that cancels everything
+// takes a neighbouring editor's unsaved words down with it.
+function cancelPendingAutosave(key) {
+  pendingAutosaveKeys(key).forEach(k => {
+    const job = pendingAutosaves.get(k);
+    if (!job) return;
+    clearTimeout(job.timer);
+    pendingAutosaves.delete(k);
+  });
 }
 
-// Called whenever a dialog closes, however it closes.
-function flushAutosave() {
-  if (!pendingAutosave) return;
-  clearTimeout(pendingAutosave.timer);
-  const job = pendingAutosave;
-  pendingAutosave = null;
-  job.run();
+// Called whenever a dialog closes, however it closes. Without a key it
+// flushes every owner, which is what a closing dialog wants: nothing should
+// be left counting down behind it.
+function flushAutosave(key) {
+  pendingAutosaveKeys(key).forEach(k => {
+    const job = pendingAutosaves.get(k);
+    if (!job) return;
+    clearTimeout(job.timer);
+    pendingAutosaves.delete(k);
+    job.run();
+  });
 }
 
 // Wires a dialog's fields to a save function and reports what it is doing in
 // a quiet line by the buttons.
-function attachAutosave({ fields = [], editors = [], save, noteId }) {
+function attachAutosave({ fields = [], editors = [], save, noteId, key }) {
+  const ownKey = key || `autosave-${++autosaveKeySeq}`;
   const note = noteId ? document.getElementById(noteId) : null;
   const say = (text, cls = "") => {
     if (note) { note.textContent = text; note.className = "autosave-note " + cls; }
@@ -784,14 +804,19 @@ function attachAutosave({ fields = [], editors = [], save, noteId }) {
       if (mine === generation) say("Not saved — " + e.message, "error");
     }
   };
-  const touched = () => { say("Saving…"); scheduleAutosave(run); };
+  const touched = () => { say("Saving…"); scheduleAutosave(run, ownKey); };
 
   fields.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("input", touched);
   });
   editors.forEach(id => wireMarkdownEditor(id, touched));
-  return { flush: flushAutosave, saveNow: run };
+  return {
+    key: ownKey,
+    flush: () => flushAutosave(ownKey),
+    cancel: () => cancelPendingAutosave(ownKey),
+    saveNow: run,
+  };
 }
 
 // ---------------------------------------------------------------- drafts
@@ -2367,6 +2392,7 @@ async function openProjectDetail(slug) {
   const data = await API.get(`/api/projects/${slug}`);
   state.currentProject = data;
   state.memoFolder = "";
+  closeDesk({ silent: true });
   document.getElementById("projects-list-view").classList.add("hidden");
   document.getElementById("project-detail-view").classList.remove("hidden");
   renderProjectDetailHeader();
@@ -2375,6 +2401,7 @@ async function openProjectDetail(slug) {
 }
 
 function backToProjects() {
+  closeDesk({ silent: true });
   document.getElementById("project-detail-view").classList.add("hidden");
   document.getElementById("projects-list-view").classList.remove("hidden");
   state.currentProject = null;
@@ -2579,7 +2606,7 @@ function buildMemoCard(m) {
     // A drop outside any target leaves the last highlight painted.
     document.querySelectorAll(".drop-target").forEach(el => el.classList.remove("drop-target"));
   });
-  card.addEventListener("click", () => openMemoModal(m.id));
+  card.addEventListener("click", () => openMemoOnDesk(m.id));
   return card;
 }
 
@@ -2711,7 +2738,7 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
     mdEditorsSetValue("nm-body", draft.body || "");
     document.getElementById("nm-autosave").textContent = "Unfinished draft restored";
   }
-  attachAutosave({
+  const newMemoAuto = attachAutosave({
     fields: ["nm-title", "nm-synopsis"], editors: ["nm-body"], noteId: "nm-autosave",
     save: async () => saveDraft(draftKey, {
       title: document.getElementById("nm-title").value,
@@ -2720,7 +2747,7 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
     }),
   });
   document.getElementById("nm-cancel").onclick = () => {
-    cancelPendingAutosave();
+    newMemoAuto.cancel();
     clearDraft(draftKey);
     closeModal();
   };
@@ -2739,82 +2766,306 @@ document.getElementById("new-memo-btn").addEventListener("click", () => {
   };
 });
 
-async function openMemoModal(id) {
-  const projectSlug = state.currentProject.slug;
-  let memo = await API.get(`/api/projects/${projectSlug}/memos/${id}`);
-  let editing = false;
+// ------------------------------------------------------------- memo desk
+// Memos open on a desk, not in a dialog. The reason to open one is usually
+// another one: two interviews read against each other, a quote lifted out of
+// one and into the argument being written in the next. A dialog holds
+// exactly one memo and holds the window hostage while it does.
+//
+// What is open are tabs; the desk splits in two so a pair sits side by side,
+// and a tab can be sent across. Each pane is a live editor that autosaves
+// under its own key — which is why the page's single autosave slot had to
+// become one per owner before any of this could be safe.
 
-  function renderView() {
-    openModal(`
-      <div class="modal-header-row">
-        <h3>${escapeHtml(memo.title)}</h3>
-        <button class="secondary-btn" id="mm-edit-btn">Edit</button>
-      </div>
-      ${memo.synopsis ? `<div class="hint" style="margin-bottom:14px;">${escapeHtml(memo.synopsis)}</div>` : ""}
+state.desk = { slug: null, memos: [], active: [null, null], split: false, focus: 0, mode: ["view", "view"] };
+
+function deskPaneKey(i) { return `desk:${i}`; }
+function deskMemos(pane) { return state.desk.memos.filter(m => m.pane === pane); }
+function deskMemo(id) { return state.desk.memos.find(m => m.id === id) || null; }
+function deskIsOpen() { return state.desk.memos.length > 0; }
+
+async function openMemoOnDesk(id, pane) {
+  const slug = state.currentProject.slug;
+  if (state.desk.slug && state.desk.slug !== slug) closeDesk({ silent: true });
+  state.desk.slug = slug;
+
+  const already = deskMemo(id);
+  if (already) {
+    state.desk.active[already.pane] = id;
+    state.desk.focus = already.pane;
+    showDesk(); renderDesk();
+    return;
+  }
+
+  const memo = await API.get(`/api/projects/${slug}/memos/${id}`);
+  // Opening into an empty right-hand pane beats stacking another tab on the
+  // left, which is the whole reason the desk was split in the first place.
+  const target = pane !== undefined ? pane
+    : (state.desk.split && deskMemos(1).length === 0 ? 1 : state.desk.focus);
+  memo.pane = state.desk.split ? target : 0;
+  state.desk.memos.push(memo);
+  state.desk.active[memo.pane] = id;
+  state.desk.focus = memo.pane;
+  showDesk(); renderDesk();
+}
+
+function showDesk() {
+  document.getElementById("project-detail-view").classList.add("hidden");
+  document.getElementById("memo-desk").classList.remove("hidden");
+}
+
+function closeDesk({ silent = false } = {}) {
+  flushAutosave(deskPaneKey(0));
+  flushAutosave(deskPaneKey(1));
+  state.desk = { slug: null, memos: [], active: [null, null], split: false, focus: 0, mode: ["view", "view"] };
+  const el = document.getElementById("memo-desk");
+  el.classList.add("hidden");
+  el.innerHTML = "";
+  if (!silent) {
+    document.getElementById("project-detail-view").classList.remove("hidden");
+    renderMemoGrid();
+  }
+}
+
+function closeDeskMemo(id) {
+  const memo = deskMemo(id);
+  if (!memo) return;
+  const pane = memo.pane;
+  // Write it out while it is still on the desk. A save that falls due after
+  // the memo has been taken out of state has nothing left to look up, and
+  // the last thing typed before closing the tab is exactly what would go.
+  flushAutosave(deskPaneKey(pane));
+  const at = deskMemos(pane).findIndex(m => m.id === id);
+  state.desk.memos = state.desk.memos.filter(m => m.id !== id);
+  const left = deskMemos(pane);
+  if (state.desk.active[pane] === id) {
+    state.desk.active[pane] = left.length ? left[Math.min(at, left.length - 1)].id : null;
+  }
+  if (!deskIsOpen()) { closeDesk(); return; }
+  renderDesk();
+}
+
+function setDeskActive(pane, id) {
+  if (state.desk.active[pane] === id) return;
+  // Write what is on screen before the pane starts belonging to another
+  // memo, or the flush lands against the wrong one.
+  flushAutosave(deskPaneKey(pane));
+  state.desk.active[pane] = id;
+  state.desk.focus = pane;
+  renderDeskPane(pane);
+}
+
+function toggleDeskSplit() {
+  state.desk.split = !state.desk.split;
+  if (state.desk.split) {
+    // Give the right-hand side something to hold: the tab behind the one in
+    // front. Splitting to an empty half shows nothing worth comparing.
+    if (deskMemos(1).length === 0) {
+      const inFront = state.desk.active[0];
+      const behind = deskMemos(0).find(m => m.id !== inFront);
+      if (behind) { behind.pane = 1; state.desk.active[1] = behind.id; }
+    }
+  } else {
+    deskMemos(1).forEach(m => { m.pane = 0; });
+    if (!state.desk.active[0]) state.desk.active[0] = state.desk.active[1];
+    state.desk.active[1] = null;
+    state.desk.focus = 0;
+  }
+  renderDesk();
+}
+
+function sendDeskMemoAcross(id) {
+  const memo = deskMemo(id);
+  if (!memo) return;
+  const from = memo.pane, to = from === 0 ? 1 : 0;
+  state.desk.split = true;
+  memo.pane = to;
+  const left = deskMemos(from);
+  if (state.desk.active[from] === id) state.desk.active[from] = left.length ? left[0].id : null;
+  state.desk.active[to] = id;
+  state.desk.focus = to;
+  renderDesk();
+}
+
+function renderDesk() {
+  if (!deskIsOpen()) { closeDesk(); return; }
+  // Rebuilding a pane throws away the editor inside it, so anything still
+  // counting down is written first. Both panes, every time: the rebuild may
+  // be happening because of the other one.
+  flushAutosave(deskPaneKey(0));
+  flushAutosave(deskPaneKey(1));
+
+  const el = document.getElementById("memo-desk");
+  const project = state.currentProject;
+  el.innerHTML = `
+    <div class="desk-bar">
+      <button class="link-btn desk-back" id="desk-back">&larr; ${escapeHtml(project ? project.title : "Project")}</button>
+      <span class="desk-count">${state.desk.memos.length} open</span>
+      <div class="spacer"></div>
+      <button class="secondary-btn" id="desk-add">Open another…</button>
+      <button class="secondary-btn" id="desk-split">${state.desk.split ? "Single pane" : "Split in two"}</button>
+    </div>
+    <div class="desk-panes${state.desk.split ? " split" : ""}">
+      <div class="desk-pane" id="desk-pane-0"></div>
+      ${state.desk.split ? `<div class="desk-pane" id="desk-pane-1"></div>` : ""}
+    </div>
+  `;
+  document.getElementById("desk-back").onclick = () => closeDesk();
+  document.getElementById("desk-add").onclick = openDeskPicker;
+  document.getElementById("desk-split").onclick = toggleDeskSplit;
+
+  renderDeskPane(0);
+  if (state.desk.split) renderDeskPane(1);
+}
+
+function renderDeskPane(i) {
+  const host = document.getElementById(`desk-pane-${i}`);
+  if (!host) return;
+  flushAutosave(deskPaneKey(i));
+
+  const memos = deskMemos(i);
+  const activeId = state.desk.active[i] || (memos[0] && memos[0].id) || null;
+  state.desk.active[i] = activeId;
+  const memo = deskMemo(activeId);
+
+  host.onmousedown = () => { state.desk.focus = i; };
+
+  if (!memo) {
+    host.innerHTML = `<div class="desk-tabs"></div>
+      <div class="desk-empty">Nothing on this side yet — open a memo, or send one across.</div>`;
+    return;
+  }
+
+  // Reading is the default. The live editor keeps the markdown visible
+  // because the text it holds *is* the source — right while writing, wrong
+  // while reading: a memo opened to quote from should look like prose, not
+  // like its own markup.
+  const editing = state.desk.mode[i] === "edit";
+
+  const sheet = editing ? `
+    <div class="desk-sheet">
+      <input type="text" id="desk-title-${i}" class="plain-field title-edit" value="${escapeAttr(memo.title)}" placeholder="Title" />
+      <input type="text" id="desk-syn-${i}" class="plain-field synopsis-edit" style="margin-top:6px;" value="${escapeAttr(memo.synopsis || "")}" placeholder="One-line synopsis" />
+      ${markdownEditorHtml(`desk-body-${i}`, memo.body)}
+    </div>` : `
+    <div class="desk-sheet">
+      <h3 class="desk-view-title">${escapeHtml(memo.title || "Untitled")}</h3>
+      ${memo.synopsis ? `<div class="hint desk-view-syn">${escapeHtml(memo.synopsis)}</div>` : ""}
       <div class="text-view md-body">${renderMarkdown(memo.body)}</div>
-      <div class="hint" style="margin-top:16px;">Created ${fmtShort(new Date(memo.created))}</div>
-      <div class="modal-actions">
-        <button class="danger-btn" id="mm-delete">Delete</button>
-        <div class="spacer"></div>
-        <button class="secondary-btn" id="mm-close">Close</button>
-      </div>
-    `, { large: true });
-    document.getElementById("mm-close").onclick = closeModal;
-    document.getElementById("mm-edit-btn").onclick = () => { editing = true; renderEdit(); };
-    wireDelete();
-  }
+    </div>`;
 
-  function renderEdit() {
-    openModal(`
-      <input type="text" id="mm-title" class="plain-field title-edit" value="${escapeAttr(memo.title)}" placeholder="Title" />
-      <input type="text" id="mm-synopsis" class="plain-field synopsis-edit" style="margin-top:6px;" value="${escapeAttr(memo.synopsis)}" placeholder="One-line synopsis" />
-      ${markdownEditorHtml("mm-body", memo.body)}
-      <div class="modal-actions">
-        <button class="danger-btn" id="mm-delete">Delete</button>
-        <div id="mm-autosave" class="autosave-note"></div>
-        <div class="spacer"></div>
-        <button class="primary-btn" id="mm-done">Done</button>
-      </div>
-    `, { large: true });
+  host.innerHTML = `
+    <div class="desk-tabs">
+      ${memos.map(m => `
+        <div class="desk-tab${m.id === activeId ? " active" : ""}">
+          <button type="button" class="desk-tab-label" data-open="${escapeAttr(m.id)}">${escapeHtml(m.title || "Untitled")}</button>
+          <button type="button" class="desk-tab-x" data-close="${escapeAttr(m.id)}" aria-label="Close ${escapeAttr(m.title || "Untitled")}">&times;</button>
+        </div>`).join("")}
+    </div>
+    ${sheet}
+    <div class="desk-foot">
+      <button class="danger-btn" data-delete="${escapeAttr(memo.id)}">Delete</button>
+      ${editing ? `<div id="desk-save-${i}" class="autosave-note"></div>` : ""}
+      <div class="spacer"></div>
+      <span class="hint">${memo.folder ? escapeHtml(memo.folder) + " &middot; " : ""}${escapeHtml(fmtShort(new Date(memo.created)))}</span>
+      <button class="secondary-btn" data-across="${escapeAttr(memo.id)}">${state.desk.split ? (i === 0 ? "Send right" : "Send left") : "Open beside"}</button>
+      <button class="${editing ? "primary-btn" : "secondary-btn"}" data-mode="${editing ? "view" : "edit"}">${editing ? "Done" : "Edit"}</button>
+    </div>
+  `;
 
-    // The memo already exists, so there is nothing to "cancel" into — it is
-    // written back as you type, and Done just stops editing.
-    const saveMemo = async () => {
-      const title = document.getElementById("mm-title").value.trim() || "Untitled";
-      const synopsis = document.getElementById("mm-synopsis").value.trim();
-      const body = markdownValue("mm-body");
-      if (title === memo.title && synopsis === memo.synopsis && body === memo.body) return;
-      memo = await API.put(`/api/projects/${projectSlug}/memos/${id}`, { title, synopsis, body });
-      const idx = state.currentProject.memos.findIndex(m => m.id === id);
-      if (idx >= 0) state.currentProject.memos[idx] = memo;
-      renderMemoGrid();
+  host.querySelectorAll("[data-open]").forEach(b => {
+    b.onclick = () => setDeskActive(i, b.dataset.open);
+  });
+  host.querySelectorAll("[data-close]").forEach(b => {
+    b.onclick = () => closeDeskMemo(b.dataset.close);
+  });
+  host.querySelectorAll("[data-across]").forEach(b => {
+    b.onclick = () => sendDeskMemoAcross(b.dataset.across);
+  });
+  host.querySelectorAll("[data-delete]").forEach(b => {
+    b.onclick = async () => {
+      const id = b.dataset.delete;
+      if (!confirm("Delete this memo?")) return;
+      // Deleting, so the countdown is dropped rather than written back.
+      cancelPendingAutosave(deskPaneKey(i));
+      await API.del(`/api/projects/${state.desk.slug}/memos/${id}`);
+      state.currentProject.memos = (state.currentProject.memos || []).filter(m => m.id !== id);
+      const pi = state.projects.findIndex(x => x.slug === state.desk.slug);
+      if (pi >= 0) state.projects[pi].memoCount = Math.max(0, (state.projects[pi].memoCount || 1) - 1);
+      closeDeskMemo(id);
     };
-    attachAutosave({
-      fields: ["mm-title", "mm-synopsis"], editors: ["mm-body"],
-      save: saveMemo, noteId: "mm-autosave",
-    });
-    document.getElementById("mm-done").onclick = async () => {
-      flushAutosave();
-      await saveMemo();
-      editing = false;
-      renderView();
-    };
-    wireDelete();
-  }
+  });
 
-  function wireDelete() {
-    document.getElementById("mm-delete").onclick = async () => {
-      if (confirm("Delete this memo?")) {
-        await API.del(`/api/projects/${projectSlug}/memos/${id}`);
-        state.currentProject.memos = state.currentProject.memos.filter(m => m.id !== id);
-        const idx = state.projects.findIndex(x => x.slug === projectSlug);
-        if (idx >= 0) state.projects[idx].memoCount = Math.max(0, (state.projects[idx].memoCount || 1) - 1);
-        renderMemoGrid(); closeModal();
-      }
+  host.querySelectorAll("[data-mode]").forEach(b => {
+    b.onclick = () => {
+      flushAutosave(deskPaneKey(i));
+      state.desk.mode[i] = b.dataset.mode;
+      state.desk.focus = i;
+      renderDeskPane(i);
     };
-  }
+  });
 
-  renderView();
+  if (!editing) return;
+
+  attachAutosave({
+    fields: [`desk-title-${i}`, `desk-syn-${i}`],
+    editors: [`desk-body-${i}`],
+    noteId: `desk-save-${i}`,
+    key: deskPaneKey(i),
+    save: () => saveDeskMemo(i, memo.id),
+  });
+}
+
+// The id is the one this pane was built for, never the one in front now: a
+// save can fall due after the tab behind it has already been brought
+// forward, and reading the pane's current id then files the words under the
+// wrong memo. That really happened — a tab switch mid-edit copied one memo's
+// title onto another.
+async function saveDeskMemo(i, id) {
+  const memo = deskMemo(id);
+  const titleEl = document.getElementById(`desk-title-${i}`);
+  const synEl = document.getElementById(`desk-syn-${i}`);
+  // A flush can arrive just after the pane was rebuilt under it; there is
+  // nothing to read then, and the rebuild already wrote what was there.
+  if (!memo || !titleEl || !synEl) return;
+
+  const title = titleEl.value.trim() || "Untitled";
+  const synopsis = synEl.value.trim();
+  const body = markdownValue(`desk-body-${i}`);
+  if (title === memo.title && synopsis === memo.synopsis && body === memo.body) return;
+
+  const saved = await API.put(`/api/projects/${state.desk.slug}/memos/${id}`, { title, synopsis, body });
+  Object.assign(memo, saved, { pane: memo.pane });
+  const idx = (state.currentProject.memos || []).findIndex(m => m.id === id);
+  if (idx >= 0) state.currentProject.memos[idx] = { ...state.currentProject.memos[idx], ...saved };
+  // The tab wears the title, so a rename has to show — but repainting the
+  // pane here would pull the caret out of the line being typed.
+  const label = document.querySelector(`#desk-pane-${i} .desk-tab.active .desk-tab-label`);
+  if (label) label.textContent = saved.title;
+}
+
+function openDeskPicker() {
+  const openIds = new Set(state.desk.memos.map(m => m.id));
+  const list = (state.currentProject.memos || []).slice()
+    .sort((a, b) => new Date(b.created) - new Date(a.created));
+  openModal(`
+    <h3>Open another memo</h3>
+    <div class="desk-pick" id="desk-pick">
+      ${list.length ? list.map(m => `
+        <button type="button" class="desk-pick-row" data-id="${escapeAttr(m.id)}"${openIds.has(m.id) ? " disabled" : ""}>
+          <span class="desk-pick-title">${escapeHtml(m.title || "Untitled")}</span>
+          <span class="hint">${m.folder ? escapeHtml(m.folder) + " &middot; " : ""}${escapeHtml(fmtShort(new Date(m.created)))}${openIds.has(m.id) ? " &middot; already open" : ""}</span>
+        </button>`).join("") : `<div class="empty-state">No memos in this project yet.</div>`}
+    </div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="secondary-btn" id="desk-pick-cancel">Cancel</button>
+    </div>
+  `, { large: true });
+  document.getElementById("desk-pick-cancel").onclick = closeModal;
+  document.querySelectorAll("#desk-pick [data-id]").forEach(b => {
+    b.onclick = async () => { closeModal(); await openMemoOnDesk(b.dataset.id); };
+  });
 }
 
 // ---------------------------------------------------------------- focus timer
