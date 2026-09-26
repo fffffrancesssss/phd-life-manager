@@ -3193,61 +3193,100 @@ function openLinkPickerModal(onPick, onCancel) {
   searchEl.focus();
 }
 
+// The long view is a rolling five weeks, not a calendar month: the anchor's
+// Mon–Sun week and the four before it. A calendar month held four or five
+// weeks depending on where the 1st fell, and clipped the weeks at either
+// end, so two months' bars were never quite comparable. Five whole weeks
+// always are, and the window steps by exactly one bar.
+const ROLLING_WEEKS = 5;
+
 function focusPeriodRange(mode, anchor) {
   if (mode === "day") return { start: new Date(anchor), end: new Date(anchor) };
   if (mode === "week") {
     const start = startOfWeek(anchor);
     return { start, end: addDays(start, 6) };
   }
-  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
-  const monthEnd = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
-  // Pad to full Mon–Sun weeks so the chart can bucket cleanly into weeks.
-  const start = startOfWeek(monthStart);
-  const end = addDays(startOfWeek(monthEnd), 6);
-  return { start, end, monthStart, monthEnd };
+  const end = addDays(startOfWeek(anchor), 6);
+  return { start: addDays(end, -(ROLLING_WEEKS * 7 - 1)), end };
+}
+
+// A week with nothing logged is usually a week the app went unused, not a
+// week of no effort, and averaging those in drags the number down until a
+// real change in habit cannot be read off it. Empty weeks are still drawn —
+// the window is five weeks either way — but left out of the average.
+function rollingWeekStats(days) {
+  const weeks = [];
+  for (let i = 0; i + 7 <= days.length; i += 7) {
+    const w = days.slice(i, i + 7);
+    const total = w.reduce((sum, d) => sum + d.totalSeconds, 0);
+    weeks.push({
+      start: new Date(w[0].date + "T00:00:00"),
+      end: new Date(w[6].date + "T00:00:00"),
+      total, avg: total / 7, empty: total === 0,
+    });
+  }
+  return weeks;
 }
 
 function focusPeriodLabel(mode, range) {
   if (mode === "day") return range.start.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" });
-  if (mode === "week") return `${range.start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${range.end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
-  return range.monthStart.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  return `${range.start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${range.end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
 }
 
 function focusPeriodStep(mode, anchor, dir) {
-  if (mode === "day") return addDays(anchor, dir);
-  if (mode === "week") return addDays(anchor, dir * 7);
-  const d = new Date(anchor);
-  d.setDate(1);
-  d.setMonth(d.getMonth() + dir);
-  return d;
+  // A week a step, so the rolling window moves by exactly one bar.
+  return mode === "day" ? addDays(anchor, dir) : addDays(anchor, dir * 7);
 }
 
 async function loadFocusSummary() {
   const mode = state.focus.summaryMode;
   const range = focusPeriodRange(mode, state.focus.summaryAnchor);
   document.getElementById("focus-summary-range").textContent = focusPeriodLabel(mode, range);
-  if (mode === "month") {
-    const [monthData, chartData] = await Promise.all([
-      API.get(`/api/focus/range-summary?start=${dateKey(range.monthStart)}&end=${dateKey(range.monthEnd)}`),
-      API.get(`/api/focus/range-summary?start=${dateKey(range.start)}&end=${dateKey(range.end)}`),
-    ]);
-    renderFocusSummary(mode, monthData, range, chartData);
-  } else {
-    const data = await API.get(`/api/focus/range-summary?start=${dateKey(range.start)}&end=${dateKey(range.end)}`);
-    renderFocusSummary(mode, data, range);
-  }
+  // One range, one request: the window is whole weeks, so the same days
+  // answer both the headline and the bars.
+  const data = await API.get(`/api/focus/range-summary?start=${dateKey(range.start)}&end=${dateKey(range.end)}`);
+  renderFocusSummary(mode, data, range);
 }
 
-function renderFocusSummary(mode, data, range, chartData) {
+function renderFocusSummary(mode, data, range) {
   const el = document.getElementById("focus-summary");
   el.innerHTML = "";
 
+  const weekStats = mode === "rolling" && data.days ? rollingWeekStats(data.days) : null;
+  const counted = weekStats ? weekStats.filter(w => !w.empty) : [];
+
   const statEl = document.createElement("div");
   statEl.className = "focus-summary-total";
-  if (mode === "day") {
+  if (mode === "rolling") {
+    const avg = counted.length ? counted.reduce((sum, w) => sum + w.avg, 0) / counted.length : 0;
+    const skipped = weekStats.length - counted.length;
+    // Saying "averaged over 0 weeks" of a window with nothing in it is a
+    // sentence about arithmetic, not about the time.
+    const note = counted.length
+      ? `${formatDurationHuman(data.totalSeconds)} total across ${data.sessionCount} session${data.sessionCount === 1 ? "" : "s"}` +
+        `, averaged over ${counted.length} week${counted.length === 1 ? "" : "s"}` +
+        `${skipped ? ` — ${skipped} empty week${skipped === 1 ? "" : "s"} left out` : ""}`
+      : "No sessions in these five weeks.";
+    statEl.innerHTML = `<div><span class="focus-summary-total-value">${formatDurationHuman(avg)}</span> daily average</div>` +
+      `<div class="hint" style="margin-top:2px;">${note}</div>`;
+  } else if (mode === "day") {
     statEl.innerHTML = `<span class="focus-summary-total-value">${formatDurationHuman(data.totalSeconds)}</span> focused across ${data.sessionCount} session${data.sessionCount === 1 ? "" : "s"}`;
   } else {
-    statEl.innerHTML = `<div><span class="focus-summary-total-value">${formatDurationHuman(data.averageSecondsPerDay)}</span> daily average</div><div class="hint" style="margin-top:2px;">${formatDurationHuman(data.totalSeconds)} total across ${data.sessionCount} session${data.sessionCount === 1 ? "" : "s"}</div>`;
+    // A day with nothing logged is a day the timer went unused, not a day of
+    // no work — the same reason an empty week is left out of the rolling
+    // average. Dividing by seven regardless makes four focused days read as
+    // a thin week. The server's averageSecondsPerDay still divides by every
+    // day in the range, so the average is taken here instead.
+    const logged = (data.days || []).filter(d => d.totalSeconds > 0);
+    const avg = logged.length ? data.totalSeconds / logged.length : 0;
+    const skipped = (data.days || []).length - logged.length;
+    const note = logged.length
+      ? `${formatDurationHuman(data.totalSeconds)} total across ${data.sessionCount} session${data.sessionCount === 1 ? "" : "s"}` +
+        `, averaged over ${logged.length} day${logged.length === 1 ? "" : "s"}` +
+        `${skipped ? ` — ${skipped} day${skipped === 1 ? "" : "s"} with nothing logged left out` : ""}`
+      : "No sessions this week.";
+    statEl.innerHTML = `<div><span class="focus-summary-total-value">${formatDurationHuman(avg)}</span> daily average</div>` +
+      `<div class="hint" style="margin-top:2px;">${note}</div>`;
   }
   el.appendChild(statEl);
 
@@ -3272,24 +3311,15 @@ function renderFocusSummary(mode, data, range, chartData) {
       chart.appendChild(col);
     });
     el.appendChild(chart);
-  } else if (mode === "month" && chartData && chartData.days && chartData.days.length) {
-    const weeks = [];
-    for (let i = 0; i < chartData.days.length; i += 7) weeks.push(chartData.days.slice(i, i + 7));
-    // The range is week-aligned, but average over the days actually present
-    // rather than assuming a full seven, so a short trailing week can't
-    // understate itself or index past the end of the array.
-    const weekStats = weeks.map(w => ({
-      start: new Date(w[0].date + "T00:00:00"),
-      end: new Date(w[w.length - 1].date + "T00:00:00"),
-      avg: w.reduce((sum, d) => sum + d.totalSeconds, 0) / w.length,
-    }));
+  } else if (weekStats && weekStats.length) {
     const chart = document.createElement("div");
     chart.className = "focus-chart";
     const max = Math.max(1, ...weekStats.map(w => w.avg));
     weekStats.forEach(w => {
       const col = document.createElement("div");
       col.className = "focus-bar-col";
-      col.title = `${fmtShort(w.start)} – ${fmtShort(w.end)}: ${formatDurationHuman(w.avg)}/day avg`;
+      col.title = `${fmtShort(w.start)} – ${fmtShort(w.end)}: ` +
+        (w.empty ? "no sessions — left out of the average" : `${formatDurationHuman(w.avg)}/day avg`);
       const bar = document.createElement("div");
       bar.className = "focus-bar";
       const pct = w.avg > 0 ? Math.max(3, Math.round((w.avg / max) * 100)) : 1;
