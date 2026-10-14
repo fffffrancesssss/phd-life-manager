@@ -1694,6 +1694,67 @@ def summarize_sessions(sessions):
     return total, sorted(groups.values(), key=lambda g: (-g["seconds"], g["linkLabel"]))
 
 
+def session_project_slug(session, codes, todos, events):
+    """Which project a session belongs to, or None.
+
+    The label is read first: a block carries its project's code in its name
+    (see normalize_event_title), and so does a block made in Apple Calendar
+    and titled by hand, which is most of what gets timed. A to-do keeps the
+    bare text, so a session started from one is traced through the to-do's
+    own link instead.
+    """
+    label = (session.get("linkLabel") or "").strip()
+    for code, slug in codes:
+        # The full-width colon is what a Chinese input method types.
+        # A block named with the code and nothing else ("PL") is that project.
+        if label == code or label.startswith(code + ":") or label.startswith(code + "\uff1a"):
+            return slug
+    todo_id = None
+    if session.get("linkType") == "todo":
+        todo_id = session.get("linkId")
+    elif session.get("linkType") == "event":
+        todo_id = (events.get(session.get("linkId")) or {}).get("todoId")
+    return (todos.get(todo_id) or {}).get("projectSlug") or None
+
+
+def summarize_projects(sessions, include_idle=True):
+    """Time per project, longest first.
+
+    An active project with nothing logged is listed at zero when
+    include_idle is set: over a week, the project that got no time is the
+    row worth seeing. A single day leaves them out — projects are a weekly
+    commitment, and a day without one is not a gap.
+    """
+    projects = {}
+    if os.path.isdir(PROJECTS_DIR):
+        for slug in sorted(os.listdir(PROJECTS_DIR)):
+            meta_path = os.path.join(PROJECTS_DIR, slug, "project.json")
+            if not os.path.isfile(meta_path):
+                continue
+            meta = load_json(meta_path)
+            projects[slug] = {
+                "slug": slug, "code": (meta.get("code") or "").strip(),
+                "title": meta.get("title") or slug,
+                "active": meta.get("status", "active") == "active",
+                "seconds": 0, "sessionCount": 0,
+            }
+    # Longest code first, so "MAX:" is never claimed by a project coded "MA".
+    codes = sorted(((p["code"], slug) for slug, p in projects.items() if p["code"]),
+                   key=lambda c: -len(c[0]))
+    todos = {t["id"]: t for t in load_json(TODOS_FILE)}
+    events = {e["id"]: e for e in load_json(CALENDAR_FILE)}
+    for s in sessions:
+        project = projects.get(session_project_slug(s, codes, todos, events))
+        if project:
+            project["seconds"] += session_duration_seconds(s)
+            project["sessionCount"] += 1
+    rows = [p for p in projects.values()
+            if p["sessionCount"] or (include_idle and p["active"])]
+    for p in rows:
+        del p["active"]
+    return sorted(rows, key=lambda p: (-p["seconds"], p["title"]))
+
+
 # ------------------------------------------------------------------ journal
 # Daily and weekly reflections, one plain-text markdown file per entry.
 # "Weekly" entries are keyed by the Monday date of that week.
@@ -1925,6 +1986,7 @@ def week_evidence(monday):
         "longestSessionSeconds": longest,
         "sessionCount": len(sessions),
         "topTasks": by_task[:3],
+        "byProject": summarize_projects(sessions),
         "todosCompleted": completed,
         "todosAdded": added,
         "ideasCaptured": ideas,
@@ -1962,6 +2024,10 @@ def normalize_event_title(event):
     """
     todos = load_json(TODOS_FILE)
     todo = next((t for t in todos if t["id"] == event.get("todoId")), None)
+    if todo is None:
+        # No to-do to consult: the code in the title *is* the link, so it
+        # is left exactly as it stands.
+        return
     base = strip_project_prefix(event.get("title") or "")
     code = project_code_of(todo.get("projectSlug")) if todo and todo.get("projectSlug") else ""
     event["title"] = f"{code}: {base}" if code else base
@@ -1971,40 +2037,64 @@ def normalize_event_title(event):
 
 
 def apply_event_project(event, project_slug):
-    """Assign a Todos-calendar block to a project, creating the to-do that
-    carries the link if the block came from Apple Calendar and has none.
+    """Link a block to a project, or unlink it.
 
-    Returns True when todos.json changed.
+    A block that came from a to-do is linked through the to-do. Any other
+    block is linked by its title alone — the project's code goes in front
+    and nothing else is recorded. It does not get a to-do made for it: a
+    block is a stretch of time, and filing it under a project should not
+    also add an item to a list of things to do.
     """
     todos = load_json(TODOS_FILE)
-    changed = False
     todo = next((t for t in todos if t["id"] == event.get("todoId")), None)
 
     if todo is None:
-        if not project_slug:
-            return False
-        todo = {
-            "id": new_id("todo"),
-            "text": strip_project_prefix(event.get("title") or "") or "Untitled",
-            "done": False,
-            "createdAt": now_iso(),
-            "completedAt": None,
-            "eventId": event["id"],
-            "projectSlug": project_slug,
-        }
-        todos.append(todo)
-        event["todoId"] = todo["id"]
-        changed = True
-    else:
-        if todo.get("projectSlug") != (project_slug or None):
-            todo["projectSlug"] = project_slug or None
-            changed = True
-        if todo.get("eventId") != event["id"]:
-            todo["eventId"] = event["id"]
-            changed = True
+        base = strip_project_prefix(event.get("title") or "")
+        code = project_code_of(project_slug) if project_slug else ""
+        event["title"] = f"{code}: {base}" if code else base
+        return
 
+    changed = False
+    if todo.get("projectSlug") != (project_slug or None):
+        todo["projectSlug"] = project_slug or None
+        changed = True
+    if todo.get("eventId") != event["id"]:
+        todo["eventId"] = event["id"]
+        todo["later"] = False
+        changed = True
     if changed:
         save_json(TODOS_FILE, todos)
+
+
+def retag_sessions(link_ids, title, date, project_slug):
+    """Carry a block's project link over to the focus time already logged
+    against it, so linking a block after the fact puts its hours where they
+    belong. Returns how many sessions changed.
+
+    Only the code in front of each session's own label is swapped; the rest
+    of the label is history and stays as it was written. A session belongs
+    to the block if it was started from it, or if it carries the block's
+    name on the block's day — moving a block between iCloud calendars is
+    create-then-delete, which gives it a new uid and strands the sessions
+    that were linked by the old one.
+    """
+    code = project_code_of(project_slug) if project_slug else ""
+    base = strip_project_prefix(title or "").strip()
+    link_ids = {i for i in link_ids if i}
+    sessions = load_focus_sessions()
+    changed = 0
+    for s in sessions:
+        bare = strip_project_prefix((s.get("linkLabel") or "").strip())
+        same_block = s.get("linkId") in link_ids or (
+            base and bare == base and date and local_date_of(s["start"]) == date)
+        if not same_block:
+            continue
+        label = f"{code}: {bare}" if code else bare
+        if s.get("linkLabel") != label:
+            s["linkLabel"] = label
+            changed += 1
+    if changed:
+        save_focus_sessions(sessions)
     return changed
 
 
@@ -2167,7 +2257,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if method == "PUT":
                 body = self._read_json_body()
                 was_done = bool(todos[idx].get("done"))
-                for k in ("text", "done", "eventId", "projectSlug"):
+                for k in ("text", "done", "eventId", "projectSlug", "later"):
                     if k in body:
                         todos[idx][k] = body[k]
                 # Stamp the moment of completion so the weekly recap can say
@@ -2241,6 +2331,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     for t in todos:
                         if t["id"] == event["todoId"]:
                             t["eventId"] = event["id"]
+                            # Given a time, it is no longer "later" — and
+                            # must not fall back there if the block goes.
+                            t["later"] = False
                     save_json(TODOS_FILE, todos)
                 result = dict(event)
                 if sync_warning:
@@ -2268,6 +2361,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if has_project:
                     apply_event_project(events[idx], project_slug)
                 normalize_event_title(events[idx])
+                if has_project:
+                    ev = events[idx]
+                    retag_sessions({ev["id"], ev.get("icloudUid"), ev.get("googleId")},
+                                   ev.get("title"), (ev.get("start") or "")[:10], project_slug)
                 moving = (target_calendar and events[idx].get("calendarName")
                           and target_calendar.strip().lower() != (events[idx]["calendarName"] or "").strip().lower())
                 sync_warning = None
@@ -2704,7 +2801,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ApiError("date query param required", 400)
             sessions = [s for s in load_focus_sessions() if local_date_of(s["start"]) == date]
             total, byTask = summarize_sessions(sessions)
-            self._send_json({"date": date, "totalSeconds": total, "sessionCount": len(sessions), "byTask": byTask})
+            self._send_json({"date": date, "totalSeconds": total, "sessionCount": len(sessions), "byTask": byTask,
+                             "byProject": summarize_projects(sessions, include_idle=False)})
+            return
+
+        if len(parts) == 3 and parts[2] == "retag":
+            # An event that lives only in iCloud or Google has no record
+            # here, so the page reports its project link directly.
+            if method != "POST":
+                raise ApiError("method not allowed", 405)
+            body = self._read_json_body()
+            changed = retag_sessions({body.get("linkId")}, body.get("title"),
+                                     (body.get("date") or "")[:10], body.get("projectSlug"))
+            self._send_json({"changed": changed})
             return
 
         if len(parts) == 3 and parts[2] == "range-summary":
@@ -2739,6 +2848,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "start": start, "end": end, "days": days,
                 "totalSeconds": total, "averageSecondsPerDay": avg,
                 "sessionCount": len(relevant), "byTask": byTask,
+                "byProject": summarize_projects(relevant, include_idle=start_date != end_date),
             })
             return
 

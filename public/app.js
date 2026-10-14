@@ -899,7 +899,15 @@ function buildTodoLi(t, { showProjectPrefix }) {
   const li = document.createElement("li");
   li.className = "todo-item" + (t.done ? " done" : "") + (t.eventId ? " scheduled" : "");
   li.draggable = true;
-  li.addEventListener("dragstart", e => e.dataTransfer.setData("text/plain", t.id));
+  li.addEventListener("dragstart", e => {
+    draggingTodoId = t.id;
+    e.dataTransfer.setData("text/plain", t.id);
+  });
+  li.addEventListener("dragend", () => {
+    draggingTodoId = null;
+    // A drop that landed on nothing leaves the highlight painted.
+    document.querySelectorAll(".sidebar .drop-target").forEach(el => el.classList.remove("drop-target"));
+  });
 
   const cb = document.createElement("input");
   cb.type = "checkbox";
@@ -942,23 +950,140 @@ function renderEmptyState(container, message) {
   container.appendChild(div);
 }
 
+// ------------------------------------------------------- the Later section
+//
+// To-dos that are further off sit folded away under "Later" at the foot of
+// the rail, so the list above is only what is actually in play. Nothing
+// moves there by itself — age says little about whether something still
+// matters — it is filed by dragging, and dragged back out the same way.
+
+const LATER_OPEN_KEY = "phd.todoLaterOpen";
+const DONE_OPEN_KEY = "phd.todoDoneOpen";
+const PROJECT_DONE_OPEN_KEY = "phd.projectTodoDoneOpen";
+let draggingTodoId = null;
+
+// A to-do with a block on the calendar is never "later", whatever its flag
+// says: it has a date, and hiding it would hide a commitment.
+function isLaterTodo(t) { return !!t.later && !t.eventId; }
+
+// Folded sections of a to-do list — Later, and Done. Each remembers whether
+// it was left open; the lists inside are repainted by their owner.
+function foldOpen(key) {
+  try { return localStorage.getItem(key) === "1"; } catch (e) { return false; }
+}
+function paintFold(id, key, count) {
+  const open = foldOpen(key);
+  document.getElementById(id + "-count").textContent = count ? String(count) : "";
+  document.getElementById(id + "-toggle").setAttribute("aria-expanded", String(open));
+  document.getElementById(id).classList.toggle("open", open);
+  document.getElementById(id + "-list").hidden = !open;
+  return open;
+}
+function wireFold(id, key, repaint) {
+  document.getElementById(id + "-toggle").addEventListener("click", () => {
+    try { localStorage.setItem(key, foldOpen(key) ? "0" : "1"); } catch (e) { /* stays folded */ }
+    repaint();
+  });
+}
+
+// Most recently finished first: what was just ticked is what is most likely
+// to be unticked again.
+function byCompletion(a, b) {
+  return new Date(b.completedAt || b.createdAt) - new Date(a.completedAt || a.createdAt);
+}
+function byNewest(a, b) { return new Date(b.createdAt) - new Date(a.createdAt); }
+
+// Done to-dos collect under their own fold as they are ticked, wherever
+// they were — a finished item is finished whether or not it was "later".
 function renderTodos() {
   const list = document.getElementById("todo-list");
+  const laterList = document.getElementById("todo-later-list");
+  const doneList = document.getElementById("todo-done-list");
   list.innerHTML = "";
-  const todos = state.todos.slice().sort((a, b) => (a.done - b.done) || (new Date(b.createdAt) - new Date(a.createdAt)));
-  if (todos.length === 0) { renderEmptyState(list, "No to-dos yet — add one above."); return; }
-  todos.forEach(t => list.appendChild(buildTodoLi(t, { showProjectPrefix: true })));
+  laterList.innerHTML = "";
+  doneList.innerHTML = "";
+  const open = state.todos.filter(t => !t.done).sort(byNewest);
+  const now = open.filter(t => !isLaterTodo(t));
+  const later = open.filter(isLaterTodo);
+  const done = state.todos.filter(t => t.done).sort(byCompletion);
+
+  if (state.todos.length === 0) renderEmptyState(list, "No to-dos yet — add one above.");
+  else if (now.length === 0) renderEmptyState(list, "Nothing in play.");
+  now.forEach(t => list.appendChild(buildTodoLi(t, { showProjectPrefix: true })));
+
+  if (later.length === 0) renderEmptyState(laterList, "Drag a to-do here to put it out of sight.");
+  later.forEach(t => laterList.appendChild(buildTodoLi(t, { showProjectPrefix: true })));
+  done.forEach(t => doneList.appendChild(buildTodoLi(t, { showProjectPrefix: true })));
+
+  const laterOpen = paintFold("todo-later", LATER_OPEN_KEY, later.length);
+  const doneOpen = paintFold("todo-done", DONE_OPEN_KEY, done.length);
+  // Nothing finished yet, nothing to fold away.
+  document.getElementById("todo-done").hidden = done.length === 0;
+  document.getElementById("todo-folds").classList.toggle("pinned", !laterOpen && !doneOpen);
 }
+
+wireFold("todo-later", LATER_OPEN_KEY, renderTodos);
+wireFold("todo-done", DONE_OPEN_KEY, renderTodos);
+wireFold("project-todo-done", PROJECT_DONE_OPEN_KEY, () => renderProjectTodos());
+
+// Optimistic, like a calendar write: the rail repaints in the same frame and
+// a refusal puts the to-do back where it was.
+async function setTodoLater(id, later) {
+  const todo = state.todos.find(t => t.id === id);
+  if (!todo || !!todo.later === later) return;
+  if (later && todo.eventId) {
+    showToast("That to-do is on the calendar — remove its block before putting it under Later.", "error");
+    return;
+  }
+  todo.later = later;
+  renderTodos();
+  try {
+    await API.put(`/api/todos/${id}`, { later });
+  } catch (err) {
+    todo.later = !later;
+    renderTodos();
+    showToast("Couldn't move that to-do — " + err.message, "error");
+  }
+}
+
+function makeTodoDropTarget(el, later) {
+  el.addEventListener("dragover", e => {
+    if (draggingTodoId === null) return;   // memos are draggable too
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    el.classList.add("drop-target");
+  });
+  // Crossing onto a row inside counts as leaving otherwise, and the
+  // highlight flickers for the whole hover.
+  el.addEventListener("dragleave", e => {
+    if (!el.contains(e.relatedTarget)) el.classList.remove("drop-target");
+  });
+  el.addEventListener("drop", e => {
+    el.classList.remove("drop-target");
+    if (draggingTodoId === null) return;
+    e.preventDefault();
+    setTodoLater(draggingTodoId, later);
+  });
+}
+makeTodoDropTarget(document.getElementById("todo-list"), false);
+makeTodoDropTarget(document.getElementById("todo-later"), true);
 
 function renderProjectTodos() {
   const list = document.getElementById("project-todo-list");
   if (!list || !state.currentProject) return;
   const slug = state.currentProject.slug;
+  const doneList = document.getElementById("project-todo-done-list");
   list.innerHTML = "";
-  const todos = state.todos.filter(t => t.projectSlug === slug).slice()
-    .sort((a, b) => (a.done - b.done) || (new Date(b.createdAt) - new Date(a.createdAt)));
-  if (todos.length === 0) { renderEmptyState(list, "No to-dos for this project yet."); return; }
-  todos.forEach(t => list.appendChild(buildTodoLi(t, { showProjectPrefix: false })));
+  doneList.innerHTML = "";
+  const todos = state.todos.filter(t => t.projectSlug === slug);
+  const open = todos.filter(t => !t.done).sort(byNewest);
+  const done = todos.filter(t => t.done).sort(byCompletion);
+  if (todos.length === 0) renderEmptyState(list, "No to-dos for this project yet.");
+  else if (open.length === 0) renderEmptyState(list, "Nothing open for this project.");
+  open.forEach(t => list.appendChild(buildTodoLi(t, { showProjectPrefix: false })));
+  done.forEach(t => doneList.appendChild(buildTodoLi(t, { showProjectPrefix: false })));
+  paintFold("project-todo-done", PROJECT_DONE_OPEN_KEY, done.length);
+  document.getElementById("project-todo-done").hidden = done.length === 0;
 }
 
 document.getElementById("todo-form").addEventListener("submit", async (e) => {
@@ -1027,6 +1152,14 @@ function stripProjectPrefix(title) {
     if (p.code && title.startsWith(p.code + ":")) return title.slice(p.code.length + 1).trimStart();
   }
   return title;
+}
+// The project a title already names, by the code in front of it. Longest
+// code first, so "MAX: …" is never read as project "MA".
+function projectSlugFromTitle(title) {
+  const t = (title || "").trim();
+  const hit = state.projects.filter(p => p.code && t.startsWith(p.code + ":"))
+    .sort((a, b) => b.code.length - a.code.length)[0];
+  return hit ? hit.slug : "";
 }
 function eventTitleWithProject(title, projectSlug) {
   const base = stripProjectPrefix(title || "");
@@ -1283,6 +1416,7 @@ function scheduleTodoOnDrop(todoId, day, hour) {
   if (!todo) return;
   const start = new Date(day); start.setHours(hour, 0, 0, 0);
   const end = new Date(start.getTime() + 60 * 60000);
+  todo.later = false;   // the server clears it too, as it links the block
   createEvent({
     title: todoDisplayText(todo), start: toLocalISO(start), end: toLocalISO(end), todoId: todo.id,
     syncToCalendar: syncRequested(),
@@ -1582,18 +1716,18 @@ function openEventModal(opts) {
     </select>
     ${lockedToTodos ? `<div class="hint" style="margin-top:5px;">Stays on "${escapeHtml(defaultCal)}" because it is scheduled from a to-do.</div>` : ""}` : "";
 
-  // Only Todos blocks carry a to-do, and the to-do is what holds the
-  // project link — so the field appears there and nowhere else.
-  const showProject = !ext && isTodosCalendar(currentCal);
+  // Any event can belong to a project. One that came from a to-do is linked
+  // through the to-do; every other one is linked by the code in front of its
+  // title, which is also what reaches the calendar on the phone.
   const linkedTodo = ev && ev.todoId ? state.todos.find(t => t.id === ev.todoId) : null;
-  const currentProject = linkedTodo ? (linkedTodo.projectSlug || "") : "";
-  const projectField = showProject ? `
+  const currentProject = linkedTodo ? (linkedTodo.projectSlug || "") : projectSlugFromTitle(defaultTitle);
+  const projectField = state.projects.length ? `
     <label>Project</label>
     <select id="ev-project">
       <option value="">No project</option>
-      ${state.projects.map(p => `<option value="${escapeAttr(p.slug)}" ${p.slug === currentProject ? "selected" : ""}>${escapeHtml(p.title)}</option>`).join("")}
+      ${state.projects.map(p => `<option value="${escapeAttr(p.slug)}" ${p.slug === currentProject ? "selected" : ""}>${escapeHtml(p.code ? p.code + " · " + p.title : p.title)}</option>`).join("")}
     </select>
-    <div class="hint" style="margin-top:5px;">Adds this to your to-dos and the project's list.</div>` : "";
+    <div class="hint" style="margin-top:5px;">Its time counts toward the project. The project's code goes in front of the title.</div>` : "";
 
   const colorField = ext ? "" : `
     <label>Color</label>
@@ -1663,30 +1797,46 @@ function openEventModal(opts) {
     const colorEl = document.getElementById("ev-color");
     const projEl = document.getElementById("ev-project");
 
+    // The dropdown decides, unless it was left alone and a code was typed
+    // into the title by hand — then the title is what was meant.
+    let projectSlug = null;
+    if (projEl) {
+      projectSlug = projEl.value !== currentProject
+        ? projEl.value
+        : (linkedTodo ? projEl.value : projectSlugFromTitle(title));
+      projectSlug = projectSlug || null;
+    }
+    // Written here as the server will write it, so the title on the grid
+    // doesn't change again a second later.
+    const fullTitle = projEl ? eventTitleWithProject(title, projectSlug) : title;
+
     if (ext) {
+      const relink = projEl && (projectSlug || "") !== currentProject;
+      const linkId = ext.uid;   // a move between calendars changes it
       updateExternalEvent(ext, {
-        title, start: start + ":00", end: end + ":00", calendar: targetCal,
+        title: fullTitle, start: start + ":00", end: end + ":00", calendar: targetCal,
+      }).then(() => {
+        // Only once the rename has stuck: a rolled-back title with sessions
+        // already moved would leave the two disagreeing.
+        if (!relink || ext.title !== fullTitle) return;
+        API.post("/api/focus/retag", {
+          linkId, title: fullTitle, date: start.slice(0, 10), projectSlug,
+        }).catch(() => { /* the hours stay where they were; the block is still linked */ });
       });
     } else if (ev) {
       const patch = {
-        title, start: start + ":00", end: end + ":00",
+        title: fullTitle, start: start + ":00", end: end + ":00",
         color: colorEl ? colorEl.value : ev.color,
         calendarName: targetCal,
       };
-      if (projEl) {
-        patch.projectSlug = projEl.value || null;
-        // The server prefixes the block with the project's code; do the same
-        // here so the title on the grid doesn't change again a second later.
-        patch.title = eventTitleWithProject(title, patch.projectSlug);
-      }
+      if (projEl) patch.projectSlug = projectSlug;
       updateEvent(ev.id, patch).then(() => {
-        // The to-do carrying the link may have just been created, or moved
-        // between projects.
-        if (projEl) refreshTodosQuietly();
+        // The to-do carrying the link may have moved between projects.
+        if (projEl && linkedTodo) refreshTodosQuietly();
       });
     } else {
       createEvent({
-        title, start: start + ":00", end: end + ":00",
+        title: fullTitle, start: start + ":00", end: end + ":00",
         color: colorEl ? colorEl.value : COLORS[0].value,
         syncToCalendar: syncRequested(), calendarName: targetCal,
       });
@@ -3499,6 +3649,17 @@ async function loadFocusSummary() {
   renderFocusSummary(mode, data, range);
 }
 
+// One project's time, for the Focus summary. A project nothing was logged
+// against still gets its row — said in words, since "0m" in the accent
+// colour reads as a figure rather than as an absence.
+function projectHoursRow(p) {
+  const name = `${p.code ? `<span class="project-hours-code">${escapeHtml(p.code)}</span>` : ""}${escapeHtml(p.title)}`;
+  const time = p.seconds > 0
+    ? `<span class="focus-task-duration">${formatDurationHuman(p.seconds)}</span>`
+    : `<span class="project-hours-none">nothing logged</span>`;
+  return `<div class="focus-task-row"><span>${name}</span>${time}</div>`;
+}
+
 function renderFocusSummary(mode, data, range) {
   const el = document.getElementById("focus-summary");
   el.innerHTML = "";
@@ -3583,6 +3744,17 @@ function renderFocusSummary(mode, data, range) {
       chart.appendChild(col);
     });
     el.appendChild(chart);
+  }
+
+  if (data.byProject && data.byProject.length) {
+    const projLabel = document.createElement("div");
+    projLabel.className = "focus-tasklist-label";
+    projLabel.textContent = mode === "day" ? "By project" : "By project (period total)";
+    el.appendChild(projLabel);
+    const projList = document.createElement("div");
+    projList.className = "focus-task-list";
+    projList.innerHTML = data.byProject.map(projectHoursRow).join("");
+    el.appendChild(projList);
   }
 
   const listLabel = document.createElement("div");
@@ -3743,6 +3915,10 @@ function renderRecapEvidence() {
   const tasks = e.topTasks.length
     ? e.topTasks.map(t => `<li><span>${escapeHtml(t.linkLabel)}</span><span class="recap-task-time">${formatDurationHuman(t.seconds)}</span></li>`).join("")
     : `<li class="hint">No focus sessions logged this week.</li>`;
+  const projects = (e.byProject || []).map(p => `<li><span>${p.code ? `<span class="project-hours-code">${escapeHtml(p.code)}</span>` : ""}${escapeHtml(p.title)}</span>${
+    p.seconds > 0
+      ? `<span class="recap-task-time">${formatDurationHuman(p.seconds)}</span>`
+      : `<span class="project-hours-none">nothing logged</span>`}</li>`).join("");
   el.innerHTML = `
     <div class="recap-week-head">
       <h3>${escapeHtml(weekRangeLabel(state.recap.selectedKey, { withYear: true }))}</h3>
@@ -3758,6 +3934,10 @@ function renderRecapEvidence() {
         ${statTile(String(e.memosWritten), "memos", "")}
         ${statTile(String(e.ideasCaptured), "ideas", "")}
       </div>
+      ${projects ? `<div class="recap-tasks">
+        <div class="recap-evidence-label">Time on projects</div>
+        <ul>${projects}</ul>
+      </div>` : ""}
       <div class="recap-tasks">
         <div class="recap-evidence-label">Where the hours went</div>
         <ul>${tasks}</ul>

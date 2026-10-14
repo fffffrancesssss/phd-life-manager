@@ -30,6 +30,20 @@
       </form>
       <p class="hint">Drag a to-do onto the calendar to time-block it. Unscheduled ones just sit here — flexible, no pressure.</p>
       <ul id="todo-list" class="todo-list"></ul>
+      <div id="todo-folds" class="todo-folds">
+        <div id="todo-later" class="todo-fold">
+          <button type="button" id="todo-later-toggle" class="todo-fold-toggle" aria-expanded="false" aria-controls="todo-later-list">
+            <span class="todo-fold-chevron" aria-hidden="true">›</span>Later<span id="todo-later-count" class="todo-fold-count"></span>
+          </button>
+          <ul id="todo-later-list" class="todo-list todo-fold-list" hidden></ul>
+        </div>
+        <div id="todo-done" class="todo-fold">
+          <button type="button" id="todo-done-toggle" class="todo-fold-toggle" aria-expanded="false" aria-controls="todo-done-list">
+            <span class="todo-fold-chevron" aria-hidden="true">›</span>Done<span id="todo-done-count" class="todo-fold-count"></span>
+          </button>
+          <ul id="todo-done-list" class="todo-list todo-fold-list" hidden></ul>
+        </div>
+      </div>
     </aside>
 
     <main class="content">
@@ -96,6 +110,12 @@
             <button type="submit">+</button>
           </form>
           <ul id="project-todo-list" class="todo-list project-todo-list"></ul>
+          <div id="project-todo-done" class="todo-fold project-todo-fold">
+            <button type="button" id="project-todo-done-toggle" class="todo-fold-toggle" aria-expanded="false" aria-controls="project-todo-done-list">
+              <span class="todo-fold-chevron" aria-hidden="true">›</span>Done<span id="project-todo-done-count" class="todo-fold-count"></span>
+            </button>
+            <ul id="project-todo-done-list" class="todo-list todo-fold-list" hidden></ul>
+          </div>
 
           <div class="panel-header">
             <h3>Memos</h3>

@@ -161,6 +161,47 @@ different tasks never merge.
 Both readers of it benefit: "where the hours went" in the weekly recap (top
 three) and the by-task list in the Focus summary (all of them).
 
+## Project time is read off the session, and shown by the week
+
+`summarize_projects()` credits a session to a project by the code at the
+front of its label (`MA: …`, full-width colon included), and failing that
+through the to-do it was started from — a to-do keeps the bare text, so its
+label carries no code. Most timed blocks are made in Apple Calendar and
+titled by hand, which is why the label comes first.
+
+Over a week or longer an active project with nothing logged is listed at
+zero, because that is the row worth seeing. **A single day leaves idle
+projects out.** Projects are a weekly commitment here, not a daily one, and
+"nothing logged" against a Tuesday would be a reproach for something that was
+never the plan. Like the rest of the recap's evidence, none of it feeds the
+score.
+
+## "Later" is a flag on the to-do, set only by dragging
+
+To-dos that are further off fold away under **Later** at the foot of the
+sidebar (`later: true` in `todos.json`). Nothing moves there by age: how old
+a to-do is says little about whether it still matters, and a list that
+rearranges itself is one that stops being trusted.
+
+1. **A to-do with a calendar block is never shown as later**
+   (`isLaterTodo()`), and linking a block clears the flag on the server. It
+   has a date, so hiding it would hide a commitment — and it must not drop
+   back out of sight if that block is deleted afterwards.
+2. **The whole Later fold is the drop target, and it is pinned while folded.**
+   Under twenty to-dos, a target that has to be scrolled to is one nobody
+   drags to. Open, it sits in the flow so its contents scroll.
+3. **Moving is optimistic**, like a memo into a folder: repaint first,
+   roll back with a toast if the server refuses. Drop targets check
+   `draggingTodoId`, the mirror of `draggingMemoId`.
+4. `.todo-fold-list[hidden]` needs its own `display: none` — `.todo-list`
+   sets `display`, which outranks the attribute.
+5. **Done to-dos collect under a Done fold by themselves**, in the sidebar
+   and on a project's page, most recently finished first. This one *is*
+   automatic, unlike Later: being finished is a fact, not a judgement. A
+   done to-do is under Done even if it was "later". The two sidebar folds
+   share one pinned footer (`.todo-folds.pinned`), which lets go as soon as
+   either is opened. The fold is hidden outright while nothing is done.
+
 ## Memo folders are directories, and nothing else
 
 A folder under a project is a real directory in `memos/`, recorded nowhere
@@ -201,11 +242,26 @@ folders, which is exactly as much as a drag onto a folder can say.
   and are **edited in place by URL** (`/api/caldav/event`), not adopted.
 - **Events on the Todos calendar created in Apple Calendar** get adopted into
   `calendar.json` by `reconcile_todos_calendar()` so they become editable here.
-- **A project link lives on the to-do**, never on the event. The event shows it
-  by carrying the project code in its title (`MA: prep访谈`), which is what
-  syncs to iCloud. The to-do keeps the *bare* text — the sidebar adds the code
-  when rendering, so storing it in both places would render `MA: MA: …`.
-  See `normalize_event_title()`.
+- **A block is linked to a project by the code in its title** (`MA: prep访谈`),
+  which is what syncs to the calendar and what project time is counted from.
+  Any event can be linked from its dialog — the app's own blocks, and events
+  that live only in iCloud or Google, which are simply renamed in place.
+  **Linking never creates a to-do.** It used to, and the field only showed on
+  Todos-calendar blocks, so a block of time could not be filed under a
+  project without also becoming an item on a list.
+- **A block that came from a to-do is linked through the to-do instead**,
+  and its title follows. The to-do keeps the *bare* text — the sidebar adds
+  the code when rendering, so storing it in both places would render
+  `MA: MA: …`. `normalize_event_title()` therefore only rewrites the title of
+  a block that has a to-do; with none to consult, the code in the title is
+  the link and is left exactly as it stands.
+- **Linking a block carries its logged focus time with it**
+  (`retag_sessions()`). A session's label is a snapshot taken when the timer
+  started, so without this a block linked afterwards would be linked and its
+  hours still uncounted. Only the code in front of each label is swapped —
+  a plain rename leaves history alone. Sessions are matched by link id, and
+  also by the block's name on the block's day, because moving a block
+  between iCloud calendars gives it a new uid and strands the old link.
 
 ## Frontend conventions
 

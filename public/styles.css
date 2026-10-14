@@ -226,6 +226,42 @@ h1, h2, h3 {
 .todo-item:hover .todo-del { opacity: 1; }
 .todo-del:hover { color: var(--danger); }
 
+/* Folds: Later (to-dos further off) and Done, tucked away at the foot of a
+   list. The whole Later fold is a drop target, so there is something to aim
+   at while it is shut. */
+.todo-folds { margin-top: 14px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+/* With both shut, they stay pinned to the foot of the rail: a drop target
+   that has to be scrolled to under twenty to-dos is one nobody drags to.
+   Open either and they take their place in the flow, so the contents can
+   scroll. */
+.todo-folds.pinned {
+  position: sticky; bottom: -22px; z-index: 1;
+  padding-bottom: 14px; background: var(--paper);
+}
+.todo-fold { border-radius: var(--r-sm); }
+.todo-fold[hidden] { display: none; }
+.todo-fold-toggle {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 7px 10px; border: none; background: transparent;
+  border-radius: var(--r-sm); cursor: pointer;
+  font: inherit; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-3);
+  transition: background var(--ease), color var(--ease);
+}
+.todo-fold-toggle:hover { background: var(--surface); color: var(--ink-2); }
+.todo-fold-chevron {
+  display: inline-block; font-size: 14px; line-height: 1; letter-spacing: 0;
+  transition: transform var(--ease);
+}
+.todo-fold.open .todo-fold-chevron { transform: rotate(90deg); }
+.todo-fold-count { margin-left: auto; letter-spacing: 0; color: var(--ink-2); }
+.todo-fold-list { margin-top: 2px; }
+/* .todo-list sets display, which would otherwise outrank the attribute. */
+.todo-fold-list[hidden] { display: none; }
+.todo-fold-list .empty-state { padding: 8px 10px 10px; font-size: 12.5px; }
+.project-todo-fold { max-width: 460px; margin: 4px 0; }
+#todo-list { min-height: 36px; border-radius: var(--r-sm); }
+
 .project-todo-add-form, .project-todo-list { max-width: 460px; }
 .project-todo-list { margin: 12px 0 4px; }
 
@@ -940,6 +976,8 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
   display: flex; justify-content: space-between; gap: 14px;
   font-size: 13px; padding: 5px 0;
 }
+.project-hours-code { font-weight: 600; color: var(--ink-2); margin-right: 8px; }
+.project-hours-none { flex-shrink: 0; color: var(--ink-3); }
 .recap-task-time { color: var(--accent-strong); font-weight: 600; flex-shrink: 0; }
 
 /* Ratings band — the only judgement on the page, and it is all yours. */
