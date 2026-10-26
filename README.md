@@ -11,7 +11,28 @@ framework, no build step. The backend is one Python file using only the
 standard library; the interface is one HTML file, one CSS file and one JS file,
 served straight off disk.
 
-![The calendar](docs/screenshot-calendar.png)
+![The calendar: the week, with to-dos in the pane beside it](docs/screenshot-calendar.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshot-ideas.png" alt="The idea board"><br><sub><b>Ideas</b> — capture in the pane, filter by tag or star</sub></td>
+    <td width="50%"><img src="docs/screenshot-idea-dialog.png" alt="An idea open"><br><sub><b>An idea</b> — tags, linked ideas, move it into a project</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshot-project.png" alt="A project page"><br><sub><b>A project</b> — its to-dos, memos and memo folders</sub></td>
+    <td><img src="docs/screenshot-desk.png" alt="Two memos open side by side"><br><sub><b>The memo desk</b> — several memos open, split in two</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshot-focus.png" alt="The focus timer and its summary"><br><sub><b>Focus</b> — the timer, and where the hours went</sub></td>
+    <td><img src="docs/screenshot-block.png" alt="Editing a calendar block"><br><sub><b>A block</b> — times, project and colour</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshot-journal.png" alt="The weekly recap"><br><sub><b>Weekly recap</b> — what the week held, and your own ratings</sub></td>
+    <td><img src="docs/screenshot-compare.png" alt="Four weeks compared"><br><sub><b>Compare</b> — the last four weeks side by side</sub></td>
+  </tr>
+</table>
+
+<sub>All screenshots use an invented week, not real data.</sub>
 
 ## What it does
 
