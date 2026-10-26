@@ -13,7 +13,7 @@
     <div class="brand">PhD Life Manager</div>
     <nav class="tabs">
       <button class="tab-btn active" data-tab="calendar">Calendar</button>
-      <button class="tab-btn" data-tab="ideas">Idea Board</button>
+      <button class="tab-btn" data-tab="ideas">Ideas</button>
       <button class="tab-btn" data-tab="projects">Projects</button>
       <button class="tab-btn" data-tab="focus">Focus</button>
       <button class="tab-btn" data-tab="journal">Journal</button>
@@ -22,13 +22,16 @@
 
   <div class="layout">
 
+    <!-- The pane follows the tab. Each one holds the elements that used to sit
+         in that tab's page, ids and all, so nothing that wires them changed. -->
     <aside class="sidebar">
+      <div class="pane" data-pane="calendar">
       <h2>To-dos</h2>
+      <p class="hint">Drag a to-do onto the calendar to time-block it. Unscheduled ones just sit here — flexible, no pressure.</p>
       <form id="todo-form" class="todo-add-form">
         <input type="text" id="todo-input" placeholder="Add a to-do…" autocomplete="off" required />
-        <button type="submit">+</button>
+        <button type="submit" aria-label="Add to-do">+</button>
       </form>
-      <p class="hint">Drag a to-do onto the calendar to time-block it. Unscheduled ones just sit here — flexible, no pressure.</p>
       <ul id="todo-list" class="todo-list"></ul>
       <div id="todo-folds" class="todo-folds">
         <div id="todo-later" class="todo-fold">
@@ -43,6 +46,78 @@
           </button>
           <ul id="todo-done-list" class="todo-list todo-fold-list" hidden></ul>
         </div>
+      </div>
+      </div>
+
+      <div class="pane" data-pane="ideas">
+        <h2>New idea</h2>
+        <p class="hint">Half-formed is fine. Everything lives in one plain text file — <code>data/ideas.txt</code>.</p>
+        <form id="idea-form" class="idea-add-form">
+          <input type="text" id="idea-title-input" placeholder="Title (optional — auto-filled from the first line if left blank)" />
+          <!-- A contenteditable, not a textarea: the markdown is styled as it
+               is typed. `required` cannot apply here, so the submit handler
+               checks for empty text itself. -->
+          <div id="idea-input" class="md-live compact is-empty" contenteditable="true"
+               spellcheck="true"
+               data-placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…"><div class="md-ln"><br></div></div>
+          <div class="idea-add-row">
+            <input type="text" id="idea-tags-input" placeholder="tags, comma, separated" />
+            <button type="submit" class="primary-btn">Add idea</button>
+          </div>
+        </form>
+        <div class="idea-filter-row">
+          <label for="idea-tag-filter" class="hint">Filter by tag</label>
+          <select id="idea-tag-filter">
+            <option value="">All tags</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="pane" data-pane="projects">
+        <h2>Projects</h2>
+        <p class="hint">Title a calendar block “MA: …” and its time counts toward that project.</p>
+        <ul id="pane-project-list" class="pane-projects"></ul>
+        <button type="button" id="pane-new-project-btn" class="secondary-btn">+ New project</button>
+        <p class="hint pane-foot">An idea can be moved into a project from its dialog — it becomes a memo there.</p>
+      </div>
+
+      <div class="pane" data-pane="project">
+        <h2>To-dos</h2>
+        <p class="hint" id="project-todo-sub">For this project only.</p>
+        <form id="project-todo-form" class="todo-add-form project-todo-add-form">
+          <input type="text" id="project-todo-input" placeholder="Add a to-do for this project…" autocomplete="off" required />
+          <button type="submit">+</button>
+        </form>
+        <ul id="project-todo-list" class="todo-list project-todo-list"></ul>
+        <div id="project-todo-done" class="todo-fold project-todo-fold">
+          <button type="button" id="project-todo-done-toggle" class="todo-fold-toggle" aria-expanded="false" aria-controls="project-todo-done-list">
+            <span class="todo-fold-chevron" aria-hidden="true">›</span>Done<span id="project-todo-done-count" class="todo-fold-count"></span>
+          </button>
+          <ul id="project-todo-done-list" class="todo-list todo-fold-list" hidden></ul>
+        </div>
+
+      </div>
+
+      <div class="pane" data-pane="focus">
+        <h2>Timer</h2>
+        <p class="hint">Phone away while it runs.</p>
+        <div class="focus-card">
+          <div class="focus-clock">
+          <div class="focus-timer-display" id="focus-timer-display">00:00:00</div>
+          <div class="focus-link-row">
+            <span class="hint">Linked to</span>
+            <button class="link-picker-btn" id="focus-link-btn">Choose a task…</button>
+          </div>
+          </div>
+          <button class="focus-toggle-btn" id="focus-toggle-btn">Start Focus</button>
+          <p class="hint focus-hint">Press to go phone-free. Press again the moment you reach for your phone or get pulled away.</p>
+        </div>
+      </div>
+
+      <div class="pane" data-pane="journal">
+        <h2>Weeks</h2>
+        <p class="hint">The score, and the focus time each week held.</p>
+        <div id="recap-strip" class="recap-strip"></div>
       </div>
     </aside>
 
@@ -64,27 +139,7 @@
 
       <section id="tab-ideas" class="tab-panel">
         <div class="panel-header">
-          <h2>Scattered Ideas</h2>
-          <p class="hint">Dump raw paragraphs here. Everything lives in one plain text file — <code>data/ideas.txt</code>.</p>
-        </div>
-        <form id="idea-form" class="idea-add-form">
-          <input type="text" id="idea-title-input" placeholder="Title (optional — auto-filled from the first line if left blank)" />
-          <!-- A contenteditable, not a textarea: the markdown is styled as it
-               is typed. `required` cannot apply here, so the submit handler
-               checks for empty text itself. -->
-          <div id="idea-input" class="md-live compact is-empty" contenteditable="true"
-               spellcheck="true"
-               data-placeholder="Jot down a research idea, half-formed thought, or a paragraph of rambling…"><div class="md-ln"><br></div></div>
-          <div class="idea-add-row">
-            <input type="text" id="idea-tags-input" placeholder="tags, comma, separated" />
-            <button type="submit" class="primary-btn">Add idea</button>
-          </div>
-        </form>
-        <div class="idea-filter-row">
-          <label for="idea-tag-filter" class="hint">Filter by tag</label>
-          <select id="idea-tag-filter">
-            <option value="">All tags</option>
-          </select>
+          <h2>Ideas</h2>
         </div>
         <div id="idea-grid" class="card-grid"></div>
       </section>
@@ -101,21 +156,6 @@
         <div id="project-detail-view" class="hidden">
           <button id="back-to-projects" class="link-btn">&larr; All projects</button>
           <div id="project-detail-header"></div>
-
-          <div class="panel-header">
-            <h3>To-dos</h3>
-          </div>
-          <form id="project-todo-form" class="todo-add-form project-todo-add-form">
-            <input type="text" id="project-todo-input" placeholder="Add a to-do for this project…" autocomplete="off" required />
-            <button type="submit">+</button>
-          </form>
-          <ul id="project-todo-list" class="todo-list project-todo-list"></ul>
-          <div id="project-todo-done" class="todo-fold project-todo-fold">
-            <button type="button" id="project-todo-done-toggle" class="todo-fold-toggle" aria-expanded="false" aria-controls="project-todo-done-list">
-              <span class="todo-fold-chevron" aria-hidden="true">›</span>Done<span id="project-todo-done-count" class="todo-fold-count"></span>
-            </button>
-            <ul id="project-todo-done-list" class="todo-list todo-fold-list" hidden></ul>
-          </div>
 
           <div class="panel-header">
             <h3>Memos</h3>
@@ -136,15 +176,6 @@
           <h2>Focus</h2>
         </div>
         <div class="focus-top-row">
-          <div class="focus-card">
-            <div class="focus-timer-display" id="focus-timer-display">00:00:00</div>
-            <div class="focus-link-row">
-              <span class="hint">Linked to</span>
-              <button class="link-picker-btn" id="focus-link-btn">Choose a task…</button>
-            </div>
-            <button class="focus-toggle-btn" id="focus-toggle-btn">Start Focus</button>
-            <p class="hint focus-hint">Press to go phone-free. Press again the moment you reach for your phone or get pulled away.</p>
-          </div>
 
           <div class="focus-summary-panel">
             <div class="panel-header">
@@ -189,7 +220,6 @@
         </div>
 
         <div id="recap-nudge" class="recap-nudge hidden"></div>
-        <div id="recap-strip" class="recap-strip"></div>
 
         <div id="recap-single">
           <div id="recap-evidence"></div>

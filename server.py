@@ -43,18 +43,27 @@ GOOGLE_CACHE_FILE = os.path.join(DATA_DIR, "google_cache.json")
 SYNC_CONFIG_FILE = os.path.join(DATA_DIR, "sync_config.json")
 
 # Kept in step with COLORS in public/app.js.
-DEFAULT_BLOCK_COLOR = "#5b7cf0"
-# The palette moved to the app icon's hues; blocks saved under the old,
-# duller values are mapped across once at start so a calendar written
-# before the change does not stay two-toned. Mapping old to new only, so
-# running it again is a no-op.
+DEFAULT_BLOCK_COLOR = "#5059b0"
+# Blocks saved under an earlier palette are mapped to the current one once at
+# start, so a calendar written before a change does not stay two-toned. The
+# palette has moved twice — to the app icon's hues, then to the muted set of
+# the indigo redesign — so both generations of old values map straight to the
+# current ones. Only old values are keys, so running it again is a no-op.
 BLOCK_COLOR_MIGRATION = {
-    "#5b7fd6": "#5b7cf0",   # blue
-    "#4fa37b": "#16a275",   # green
-    "#c1533f": "#e5484d",   # red
-    "#c98a2c": "#c1821c",   # amber
-    "#8a5bd6": "#9560f0",   # purple
-    "#5c6570": "#6b7280",   # slate
+    # first palette
+    "#5b7fd6": "#5059b0",   # blue   -> indigo
+    "#4fa37b": "#4a7363",   # green  -> sage
+    "#c1533f": "#a8566a",   # red    -> rose
+    "#c98a2c": "#94691e",   # amber  -> ochre
+    "#8a5bd6": "#6c58a8",   # purple -> violet
+    "#5c6570": "#5f6b7a",   # slate
+    # the icon's hues
+    "#5b7cf0": "#5059b0",
+    "#16a275": "#4a7363",
+    "#e5484d": "#a8566a",
+    "#c1821c": "#94691e",
+    "#9560f0": "#6c58a8",
+    "#6b7280": "#5f6b7a",
 }
 ICLOUD_CALDAV_URL = "https://caldav.icloud.com/"
 FOCUS_SESSIONS_FILE = os.path.join(DATA_DIR, "focus_sessions.json")
@@ -110,10 +119,10 @@ def ensure_data():
 
 
 def migrate_block_colors():
-    """Repaint blocks saved under the previous, duller palette.
+    """Repaint blocks saved under an earlier palette.
 
-    Cosmetic and one-way: only the six old values are touched, and the new
-    ones are not keys, so this settles after the first run.
+    Cosmetic and one-way: only old values are touched, and the current ones
+    are not keys, so this settles after the first run.
     """
     try:
         events = load_json(CALENDAR_FILE)

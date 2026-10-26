@@ -642,18 +642,32 @@ function calBlockGeometry(start, end) {
     clipped: startH < gridStart || endH > gridEnd,
   };
 }
-// What a calendar block can be painted. These are the icon's hues, matched to
-// the section colours in styles.css — a block used to be a duller blue than
-// anything else on the page. Blocks saved under the old values are migrated
-// on start by migrate_block_colors() in server.py.
+// What a calendar block can be painted: muted, so a solid block reads as
+// claimed time rather than as decoration. The first is the app's accent
+// (--accent in styles.css). Every one holds white text at 4.5:1 or better.
+// Blocks saved under older values are migrated on start by
+// migrate_block_colors() in server.py.
 const COLORS = [
-  { value: "#5b7cf0", label: "Blue" },
-  { value: "#16a275", label: "Green" },
-  { value: "#e5484d", label: "Red" },
-  { value: "#c1821c", label: "Amber" },
-  { value: "#9560f0", label: "Purple" },
-  { value: "#6b7280", label: "Slate" },
+  { value: "#5059b0", label: "Indigo" },
+  { value: "#4a7363", label: "Sage" },
+  { value: "#a8566a", label: "Rose" },
+  { value: "#94691e", label: "Ochre" },
+  { value: "#6c58a8", label: "Violet" },
+  { value: "#5f6b7a", label: "Slate" },
 ];
+
+// Tags and project codes take one of Notion's pastel pairs (.hue-0 … .hue-8
+// in styles.css), chosen from the name itself so the same tag is the same
+// colour on every card, dialog and list.
+const HUE_COUNT = 9;
+function hueClass(name) {
+  let h = 0;
+  for (const ch of String(name || "").trim().toLowerCase()) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return `hue-${h % HUE_COUNT}`;
+}
+function tagChip(t) {
+  return `<span class="tag-chip ${hueClass(t)}">${escapeHtml(t)}</span>`;
+}
 
 async function handleApiResponse(r) {
   const data = await r.json().catch(() => ({}));
@@ -919,8 +933,8 @@ function buildTodoLi(t, { showProjectPrefix }) {
   const code = showProjectPrefix && t.projectSlug ? projectCodeFor(t.projectSlug) : null;
   if (code) {
     const prefix = document.createElement("span");
-    prefix.className = "todo-code";
-    prefix.textContent = code + ": ";
+    prefix.className = "todo-code " + hueClass(code);
+    prefix.textContent = code;
     txt.appendChild(prefix);
   }
   txt.appendChild(document.createTextNode(t.text));
@@ -1536,7 +1550,7 @@ function isTodosCalendar(name) {
 function paintBlockByCalendar(el, calendarName, solidColor) {
   if (!calendarName || isTodosCalendar(calendarName)) {
     el.classList.add("solid");
-    el.style.background = solidColor || "var(--c-calendar)";
+    el.style.background = solidColor || "var(--accent)";
   } else {
     el.classList.add("tinted");
     el.style.setProperty("--block-hue", calendarHue(calendarName));
@@ -2282,7 +2296,7 @@ function renderIdeas() {
           aria-pressed="${!!idea.starred}">${idea.starred ? "\u2605" : "\u2606"}</button>
         <div class="card-title">${escapeHtml(ideaDisplayTitle(idea))}</div>
         <div class="card-preview">${escapeHtml(idea.text.slice(0, 200))}${idea.text.length > 200 ? "…" : ""}</div>
-        <div class="card-tags">${idea.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("")}</div>
+        <div class="card-tags">${idea.tags.map(tagChip).join("")}</div>
         <div class="card-footer">${fmtShort(new Date(idea.created))}${idea.links.length ? ` · ${idea.links.length} link(s)` : ""}</div>
       `;
       card.addEventListener("click", () => openIdeaModal(idea));
@@ -2331,7 +2345,7 @@ function openIdeaModal(idea) {
         </div>
       </div>
       <div class="text-view md-body">${renderMarkdown(idea.text)}</div>
-      <div class="card-tags" style="margin-top:16px;">${idea.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("") || '<span class="hint">no tags</span>'}</div>
+      <div class="card-tags" style="margin-top:16px;">${idea.tags.map(tagChip).join("") || '<span class="hint">no tags</span>'}</div>
       <div class="hint" style="margin-top:14px;">Linked ideas</div>
       <div class="card-tags" style="margin-top:4px;">${idea.links.map(lid => {
         const li = state.ideas.find(i => i.id === lid);
@@ -2479,17 +2493,37 @@ function renderProjects() {
       card.innerHTML = `
         <div class="badge-row">
           <div class="status-badge">${escapeHtml(p.status || "active")}</div>
-          <div class="code-badge">${escapeHtml(p.code || "")}</div>
+          <div class="code-badge ${hueClass(p.code)}">${escapeHtml(p.code || "")}</div>
         </div>
         <div class="card-title">${escapeHtml(p.title)}</div>
         <div class="card-preview">${escapeHtml(p.description || "")}</div>
-        <div class="card-tags">${(p.tags || []).map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("")}</div>
+        <div class="card-tags">${(p.tags || []).map(tagChip).join("")}</div>
         <div class="card-footer">${p.memoCount || 0} memo(s) · ${fmtShort(new Date(p.createdAt))}</div>
       `;
       card.addEventListener("click", () => openProjectDetail(p.slug));
       grid.appendChild(card);
     });
+  renderProjectPane(projects);
 }
+
+// The projects pane: the same list as the grid, as a quick switcher beside it.
+function renderProjectPane(projects) {
+  const list = document.getElementById("pane-project-list");
+  list.innerHTML = "";
+  projects.forEach(p => {
+    const li = document.createElement("li");
+    li.innerHTML = `<button type="button">
+      ${p.code ? `<span class="code-badge ${hueClass(p.code)}">${escapeHtml(p.code)}</span>` : ""}
+      <span class="pane-project-title">${escapeHtml(p.title)}</span>
+      <span class="pane-project-count">${p.memoCount || 0}</span>
+    </button>`;
+    li.querySelector("button").addEventListener("click", () => openProjectDetail(p.slug));
+    list.appendChild(li);
+  });
+}
+document.getElementById("pane-new-project-btn").addEventListener("click", () => {
+  document.getElementById("new-project-btn").click();
+});
 
 function deriveCode(title) {
   const words = title.trim().split(/\s+/).filter(w => /[a-zA-Z0-9]/.test(w));
@@ -2545,6 +2579,8 @@ async function openProjectDetail(slug) {
   closeDesk({ silent: true });
   document.getElementById("projects-list-view").classList.add("hidden");
   document.getElementById("project-detail-view").classList.remove("hidden");
+  // The side pane swaps from the project list to this project's to-dos.
+  document.body.classList.add("project-open");
   renderProjectDetailHeader();
   renderProjectTodos();
   renderMemoGrid();
@@ -2554,6 +2590,7 @@ function backToProjects() {
   closeDesk({ silent: true });
   document.getElementById("project-detail-view").classList.add("hidden");
   document.getElementById("projects-list-view").classList.remove("hidden");
+  document.body.classList.remove("project-open");
   state.currentProject = null;
 }
 document.getElementById("back-to-projects").addEventListener("click", backToProjects);
@@ -2563,11 +2600,11 @@ function renderProjectDetailHeader() {
   document.getElementById("project-detail-header").innerHTML = `
     <div class="badge-row">
       <div class="status-badge">${escapeHtml(p.status)}</div>
-      <div class="code-badge">${escapeHtml(p.code || "")}</div>
+      <div class="code-badge ${hueClass(p.code)}">${escapeHtml(p.code || "")}</div>
     </div>
     <div class="card-title">${escapeHtml(p.title)}</div>
     <div class="card-preview">${escapeHtml(p.description || "")}</div>
-    <div class="card-tags">${(p.tags || []).map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join("")}</div>
+    <div class="card-tags">${(p.tags || []).map(tagChip).join("")}</div>
     <div class="modal-actions" style="margin-top:10px; justify-content:flex-start;">
       <button class="secondary-btn" id="edit-project-btn">Edit info</button>
       <button class="danger-btn" id="delete-project-btn">Delete project</button>
@@ -3653,7 +3690,7 @@ async function loadFocusSummary() {
 // against still gets its row — said in words, since "0m" in the accent
 // colour reads as a figure rather than as an absence.
 function projectHoursRow(p) {
-  const name = `${p.code ? `<span class="project-hours-code">${escapeHtml(p.code)}</span>` : ""}${escapeHtml(p.title)}`;
+  const name = `${p.code ? `<span class="project-hours-code ${hueClass(p.code)}">${escapeHtml(p.code)}</span>` : ""}${escapeHtml(p.title)}`;
   const time = p.seconds > 0
     ? `<span class="focus-task-duration">${formatDurationHuman(p.seconds)}</span>`
     : `<span class="project-hours-none">nothing logged</span>`;
@@ -3915,7 +3952,7 @@ function renderRecapEvidence() {
   const tasks = e.topTasks.length
     ? e.topTasks.map(t => `<li><span>${escapeHtml(t.linkLabel)}</span><span class="recap-task-time">${formatDurationHuman(t.seconds)}</span></li>`).join("")
     : `<li class="hint">No focus sessions logged this week.</li>`;
-  const projects = (e.byProject || []).map(p => `<li><span>${p.code ? `<span class="project-hours-code">${escapeHtml(p.code)}</span>` : ""}${escapeHtml(p.title)}</span>${
+  const projects = (e.byProject || []).map(p => `<li><span>${p.code ? `<span class="project-hours-code ${hueClass(p.code)}">${escapeHtml(p.code)}</span>` : ""}${escapeHtml(p.title)}</span>${
     p.seconds > 0
       ? `<span class="recap-task-time">${formatDurationHuman(p.seconds)}</span>`
       : `<span class="project-hours-none">nothing logged</span>`}</li>`).join("");

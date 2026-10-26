@@ -265,26 +265,35 @@ folders, which is exactly as much as a drag onto a folder can say.
 
 ## Frontend conventions
 
-- **One `--accent` triple swapped per section** via `body[data-domain]`. Every
-  component reads `--accent` / `--accent-soft` / `--accent-strong`, so no
-  component knows about sections. Calendar indigo, ideas amber, projects teal,
-  focus orange, journal violet.
-- **The section hues are the app icon's palette**, not a separate one. They
-  used to be duller versions, which is why the icon never looked like it
-  belonged to the app it opened. Amber, green and orange are one step darker
-  in the interface than in the icon, and that gap is deliberate: the icon
-  carries no text, while these have to hold white at 3:1 and stand as graphics
-  on paper. `COLORS` in `app.js` (what a block is painted) and
-  `BLOCK_COLOR_MIGRATION` in `server.py` are kept in step with them.
+- **One accent, muted indigo, for the whole app** (`--accent` #5059b0,
+  `--accent-soft`, `--accent-strong`). Sections used to own a hue each,
+  which tinted every screen and made none of it mean anything. The accent is
+  kept for the active tab, the one filled button, claimed time on the
+  calendar and focus bars. Everything else is Notion's neutrals on a white
+  ground, with grey (`--pane`) only for the side pane. Bright, saturated
+  blues read as dated here — that was the reason for the change.
+- **The side pane follows the tab** (`.pane[data-pane]`, shown by
+  `body[data-domain]`): to-dos beside the calendar, the idea composer and tag
+  filter beside the ideas, the project list — or, inside a project, its
+  to-dos (`body.project-open`) — beside projects, the timer beside its log,
+  the week list beside the recap. Each pane holds the very elements that used
+  to sit in the page, ids intact, so no handler had to learn where they went.
+- **Tags and project codes take Notion's pastel pairs** (`.hue-0`…`.hue-8`),
+  picked by `hueClass(name)` from the name itself so a tag is the same colour
+  everywhere. Linked-idea chips stay neutral on purpose.
+- **Calendar blocks:** the app's own blocks are solid in their chosen colour
+  with white text; every other calendar is a faint, desaturated wash with a
+  thin inset edge, so the time you claimed reads first. `COLORS` in `app.js`
+  is a muted six, every one holding white at 4.5:1, and
+  `BLOCK_COLOR_MIGRATION` in `server.py` maps both older palettes onto it.
 - **Every text/background pair is measured, not eyeballed** — body and
   secondary text at 4.5:1, hues used as graphics or carrying white labels at
-  3:1. The first pass at the icon's palette failed six of those pairs; the
-  fix was to darken three hues until they cleared, which is where the
-  interface/icon gap came from.
-- **No web fonts.** Headings are `ui-serif` (New York on macOS), body is
-  Avenir Next; both ship with the OS. Headings used to come from Google Fonts,
-  which meant an outbound request on every launch of an app that otherwise
-  touches nothing, and a silent fall back to Georgia whenever it failed.
+  3:1. `--ink-3` is pitched against the palest grey it sits on (#f1f1ef),
+  not just against white.
+- **No web fonts.** Avenir Next throughout, headings set semibold with tight
+  tracking (`--font-display`). It ships with the OS. Headings once came from
+  Google Fonts, which meant an outbound request on every launch of an app
+  that otherwise touches nothing.
 - **The calendar shows the whole day and scrolls inside itself.** `HOURS` is
   0–23; the grid used to stop at 7am–11pm, which quietly refused to hold an
   early start or a late night. The panel is a flex column filling the window,
