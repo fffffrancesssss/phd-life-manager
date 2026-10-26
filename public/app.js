@@ -2256,16 +2256,42 @@ function computeIdeaTagCounts() {
   return counts;
 }
 
+// The filter in the ideas pane: All and Starred as rows, then every tag as
+// its own coloured chip with its count, most used first. One press filters;
+// pressing the filter that is already on goes back to All.
 function renderIdeaTagFilterOptions() {
-  const select = document.getElementById("idea-tag-filter");
+  const el = document.getElementById("idea-filter");
   const tagCounts = computeIdeaTagCounts();
   const sortedTags = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a] || a.localeCompare(b));
   const starred = state.ideas.filter(i => i.starred).length;
-  select.innerHTML = `<option value="">All tags (${state.ideas.length})</option>`
-    + (starred ? `<option value="${STARRED_FILTER}">\u2605 Starred (${starred})</option>` : "")
-    + sortedTags.map(t => `<option value="${escapeAttr(TAG_PREFIX + t)}">${escapeHtml(t)} (${tagCounts[t]})</option>`).join("");
-  select.value = state.ideaTagFilter || "";
-  state.ideaTagFilter = select.value; // in case the previously selected tag no longer exists
+  // A tag that has since disappeared (its last idea deleted or retagged)
+  // would otherwise leave the grid filtered by something no longer listed.
+  const tag = activeTagFilter();
+  if (tag !== null && !tagCounts[tag]) state.ideaTagFilter = "";
+  const current = state.ideaTagFilter || "";
+
+  const row = (value, label, count) => `
+    <button type="button" class="idea-filter-row-btn${current === value ? " active" : ""}"
+      data-filter="${escapeAttr(value)}" aria-pressed="${current === value}">
+      <span>${label}</span><span class="idea-filter-count">${count}</span>
+    </button>`;
+  const chips = sortedTags.map(t => {
+    const value = TAG_PREFIX + t;
+    return `<button type="button" class="idea-filter-tag${current === value ? " active" : ""}"
+      data-filter="${escapeAttr(value)}" aria-pressed="${current === value}">
+      <span class="tag-chip ${hueClass(t)}">${escapeHtml(t)}</span><span class="idea-filter-count">${tagCounts[t]}</span>
+    </button>`;
+  }).join("");
+  el.innerHTML = row("", "All ideas", state.ideas.length)
+    + row(STARRED_FILTER, "Starred", starred)
+    + (chips ? `<div class="idea-filter-tags">${chips}</div>` : "");
+  el.querySelectorAll("[data-filter]").forEach(b => {
+    b.addEventListener("click", () => {
+      const value = b.dataset.filter;
+      state.ideaTagFilter = value && value === current ? "" : value;
+      renderIdeas();
+    });
+  });
 }
 
 function renderIdeas() {
@@ -2325,10 +2351,7 @@ document.getElementById("idea-form").addEventListener("submit", async (e) => {
   renderIdeas();
 });
 
-document.getElementById("idea-tag-filter").addEventListener("change", (e) => {
-  state.ideaTagFilter = e.target.value;
-  renderIdeas();
-});
+
 
 function openIdeaModal(idea) {
   let editing = false;

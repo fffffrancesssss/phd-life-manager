@@ -623,8 +623,28 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
 .idea-add-form > input[type=text]#idea-title-input { font-weight: 600; }
 .idea-add-form .md-live.compact { margin-top: 0; min-height: 140px; }
 .idea-add-row { display: flex; flex-direction: column; gap: 8px; }
-.idea-filter-row { display: flex; flex-direction: column; gap: 6px; margin: 20px 0 2px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
-.idea-filter-row select { font-size: 13px; width: 100%; }
+.idea-filter-row { display: flex; flex-direction: column; gap: 8px; margin: 20px 0 2px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.idea-filter-label { font-size: 12px; font-weight: 600; color: var(--ink-3); }
+.idea-filter { display: flex; flex-direction: column; gap: 1px; }
+.idea-filter-row-btn {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; border: none; background: none; border-radius: var(--r-sm);
+  padding: 7px 10px; font: inherit; font-size: 13.5px; color: var(--ink);
+  text-align: left; cursor: pointer; transition: background var(--ease);
+}
+.idea-filter-row-btn:hover { background: var(--surface-2); }
+.idea-filter-row-btn.active { background: var(--surface-2); font-weight: 600; }
+.idea-filter-count { font-size: 12px; font-weight: 400; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.idea-filter-tags { display: flex; flex-wrap: wrap; gap: 8px 10px; padding: 10px 2px 0; }
+/* A tag is a chip and its count; the one filtering the grid gets a ring in
+   the accent so it is clear which filter is on. */
+.idea-filter-tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: none; background: none; padding: 0; cursor: pointer; font: inherit;
+}
+.idea-filter-tag .tag-chip { transition: box-shadow var(--ease), filter var(--ease); }
+.idea-filter-tag:hover .tag-chip { filter: brightness(0.97); }
+.idea-filter-tag.active .tag-chip { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent); }
 
 /* ---------- modals ------------------------------------------------------ */
 
