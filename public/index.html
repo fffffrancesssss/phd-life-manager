@@ -18,6 +18,7 @@
       <button class="tab-btn" data-tab="focus">Focus</button>
       <button class="tab-btn" data-tab="journal">Journal</button>
     </nav>
+    <div class="topbar-date" id="topbar-date"></div>
   </header>
 
   <div class="layout">
@@ -80,6 +81,7 @@
       </div>
 
       <div class="pane" data-pane="project">
+        <nav id="pane-project-switch" class="pane-switch" aria-label="Projects"></nav>
         <h2>To-dos</h2>
         <p class="hint" id="project-todo-sub">For this project only.</p>
         <form id="project-todo-form" class="todo-add-form project-todo-add-form">
@@ -130,6 +132,7 @@
           <div class="spacer"></div>
           <button id="sync-status-btn" class="icloud-btn">Calendar sync…</button>
         </div>
+        <div id="cal-legend" class="cal-legend" aria-label="Calendars on this week"></div>
         <div class="cal-scroll">
           <div id="calendar-grid" class="calendar-grid"></div>
         </div>

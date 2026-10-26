@@ -1693,6 +1693,24 @@ function renderCalendarGrid() {
   });
 
   if (scroller && scroller.scrollTop !== keep) scroller.scrollTop = keep;
+  renderCalendarLegend(days);
+}
+
+// Which colour is which calendar, for the calendars that actually have
+// something on this week. With nothing from other calendars on screen there
+// is nothing to tell apart, so the legend stays out of the way.
+function renderCalendarLegend(days) {
+  const el = document.getElementById("cal-legend");
+  const keys = new Set(days.map(dateKey));
+  const localUids = new Set(state.events.map(e => e.icloudUid).filter(Boolean));
+  const names = [...new Set(state.externalEvents
+    .filter(ev => !localUids.has(ev.uid) && keys.has(dateKey(new Date(ev.start))))
+    .map(ev => ev.calendar)
+    .filter(name => name && !isTodosCalendar(name)))]
+    .sort((a, b) => a.localeCompare(b));
+  if (!names.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<span class="cal-legend-item"><span class="cal-legend-key solid"></span>${escapeHtml(blocksCalendarName())} — your blocks</span>`
+    + names.map(n => `<span class="cal-legend-item"><span class="cal-legend-key tinted" style="--block-hue:${calendarHue(n)}"></span>${escapeHtml(n)}</span>`).join("");
 }
 
 function toDatetimeLocalValue(d) { return toLocalISO(d).slice(0, 16); }
@@ -1743,11 +1761,17 @@ function openEventModal(opts) {
     </select>
     <div class="hint" style="margin-top:5px;">Its time counts toward the project. The project's code goes in front of the title.</div>` : "";
 
+  // Swatches rather than a list of names: the choice is a colour, so it is
+  // shown as one. They are real radios, so the keyboard still works.
+  const chosenColor = ev && COLORS.some(c => c.value === ev.color) ? ev.color : COLORS[0].value;
   const colorField = ext ? "" : `
-    <label>Color</label>
-    <select id="ev-color">
-      ${COLORS.map(c => `<option value="${c.value}" ${ev && ev.color === c.value ? "selected" : ""}>${c.label}</option>`).join("")}
-    </select>`;
+    <label id="ev-color-label">Color</label>
+    <div class="swatches" role="radiogroup" aria-labelledby="ev-color-label">
+      ${COLORS.map(c => `<label class="swatch" title="${c.label}">
+        <input type="radio" name="ev-color" value="${c.value}" ${c.value === chosenColor ? "checked" : ""} aria-label="${c.label}" />
+        <span class="swatch-dot" style="background:${c.value}"></span>
+      </label>`).join("")}
+    </div>`;
 
   openModal(`
     <h3>${isEdit ? "Edit event" : "New event"}</h3>
@@ -1808,7 +1832,7 @@ function openEventModal(opts) {
     if (!start || !end || start >= end) { showToast("End must be after start.", "error"); return; }
     const calEl = document.getElementById("ev-calendar");
     const targetCal = calEl && !calEl.disabled ? calEl.value : currentCal;
-    const colorEl = document.getElementById("ev-color");
+    const colorEl = document.querySelector('input[name="ev-color"]:checked');
     const projEl = document.getElementById("ev-project");
 
     // The dropdown decides, unless it was left alone and a code was typed
@@ -2544,6 +2568,26 @@ function renderProjectPane(projects) {
     list.appendChild(li);
   });
 }
+// Inside a project, the pane leads with a switcher: one button per project,
+// so moving between them does not mean going back to the list first.
+function renderProjectSwitch() {
+  const el = document.getElementById("pane-project-switch");
+  const here = state.currentProject && state.currentProject.slug;
+  const projects = state.projects.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  el.innerHTML = projects.map(p => `
+    <button type="button" class="pane-switch-btn${p.slug === here ? " active" : ""}" data-slug="${escapeAttr(p.slug)}"
+      title="${escapeAttr(p.title)}" ${p.slug === here ? 'aria-current="page"' : ""}>
+      ${p.code ? `<span class="code-badge ${hueClass(p.code)}">${escapeHtml(p.code)}</span>`
+               : `<span class="pane-switch-title">${escapeHtml(p.title)}</span>`}
+    </button>`).join("")
+    + `<button type="button" class="pane-switch-new" aria-label="New project" title="New project">+</button>`;
+  el.querySelectorAll(".pane-switch-btn").forEach(b => {
+    b.addEventListener("click", () => { if (b.dataset.slug !== here) openProjectDetail(b.dataset.slug); });
+  });
+  el.querySelector(".pane-switch-new").addEventListener("click", () => {
+    document.getElementById("new-project-btn").click();
+  });
+}
 document.getElementById("pane-new-project-btn").addEventListener("click", () => {
   document.getElementById("new-project-btn").click();
 });
@@ -2620,6 +2664,9 @@ document.getElementById("back-to-projects").addEventListener("click", backToProj
 
 function renderProjectDetailHeader() {
   const p = state.currentProject;
+  // Here rather than in openProjectDetail, so editing a project's code or
+  // title updates the switcher too.
+  renderProjectSwitch();
   document.getElementById("project-detail-header").innerHTML = `
     <div class="badge-row">
       <div class="status-badge">${escapeHtml(p.status)}</div>
@@ -4390,8 +4437,16 @@ function nowLineOffsetPx(now) {
   return (hours - HOURS[0]) * CAL_HOUR_PX;
 }
 
+// Today's date, at the right of the top bar. It is kept by the same tick as
+// the now-line, so it turns over at midnight with the calendar.
+function updateTopbarDate(now = new Date()) {
+  document.getElementById("topbar-date").textContent =
+    now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+}
+
 function tickNowLine() {
   const now = new Date();
+  updateTopbarDate(now);
 
   // A new day changes which column is "today", so the grids have to be
   // rebuilt rather than nudged.
@@ -4443,6 +4498,7 @@ async function refreshLiveData({ force = false } = {}) {
   }
 }
 
+updateTopbarDate();
 setInterval(tickNowLine, NOW_LINE_INTERVAL_MS);
 setInterval(() => { if (!document.hidden) refreshLiveData(); }, BACKGROUND_REFRESH_MS);
 

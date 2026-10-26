@@ -283,7 +283,9 @@ folders, which is exactly as much as a drag onto a folder can say.
   everywhere. Linked-idea chips stay neutral on purpose.
 - **Calendar blocks:** the app's own blocks are solid in their chosen colour
   with white text; every other calendar is a faint, desaturated wash with a
-  thin inset edge, so the time you claimed reads first. `COLORS` in `app.js`
+  thin inset edge, so the time you claimed reads first. A legend above the
+  grid names the calendars that have something on the week shown, and hides
+  when there is nothing to tell apart. `COLORS` in `app.js`
   is a muted six, every one holding white at 4.5:1, and
   `BLOCK_COLOR_MIGRATION` in `server.py` maps both older palettes onto it.
 - **Every text/background pair is measured, not eyeballed** — body and
