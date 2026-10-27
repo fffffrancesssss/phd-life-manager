@@ -1240,7 +1240,10 @@ body[data-domain="calendar"] .content { overflow: hidden; padding-bottom: 22px; 
   /* Pull the desk to the content's edges and give it the pane's grey, so the
      white sheets on it read as paper on a desk. */
   margin: -22px -28px -48px; padding: 18px 24px 24px; background: var(--pane);
-  height: calc(100vh - 150px); min-height: 440px;
+  /* Exactly the window under the top bar. The negative margins cancel the
+     content's padding, so this fills it edge to edge without scrolling; a
+     smaller height left a band of white paper under the desk. */
+  height: calc(100vh - 58px); min-height: 440px;
 }
 .desk-bar { display: flex; align-items: center; gap: 10px; flex: none; }
 .desk-bar .spacer { flex: 1; }
